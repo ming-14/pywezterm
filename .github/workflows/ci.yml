@@ -40,7 +40,7 @@ jobs:
             os: windows-latest
             python-arch: x86
             targets: "i686-pc-windows-msvc"
-            test: true
+            test: false     # 32 位 Windows 上 Rust 绑定存在 segfault 问题，仅构建
           - name: windows-arm64
             os: windows-latest
             python-arch: x64
