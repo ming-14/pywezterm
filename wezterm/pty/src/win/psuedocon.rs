@@ -1,26 +1,44 @@
-use super::WinChild;
-use crate::cmdbuilder::CommandBuilder;
-use crate::win::procthreadattr::ProcThreadAttributeList;
+//! Windows ConPTY 函数指针动态加载
+//!
+//! 通过 `LoadLibraryW`/`GetProcAddress` 动态加载 kernel32.dll（或侧载的
+//! conpty.dll）中的 CreatePseudoConsole / ResizePseudoConsole /
+//! ClosePseudoConsole，返回 `extern "system"` 函数指针。
+//!
+//! 为什么不用 `shared_library!` 宏：该宏生成的函数指针是 `extern "Rust"`
+//! 调用约定，而 Win32 API 在 x86 上是 stdcall——两者不匹配会导致栈破坏
+//! （32 位 segfault 的根因）。`extern "system"` 在 x86 上即 stdcall，
+//! 在 x64 上即 C 约定，正确匹配 Win32 API。
+
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::{mem, ptr};
+
 use anyhow::{bail, ensure, Error};
 use filedescriptor::{FileDescriptor, OwnedHandle};
 use lazy_static::lazy_static;
-use shared_library::shared_library;
-use std::ffi::OsString;
-use std::io::Error as IoError;
-use std::os::windows::ffi::OsStringExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::path::Path;
-use std::sync::Mutex;
-use std::{mem, ptr};
 use winapi::shared::minwindef::DWORD;
 use winapi::shared::winerror::{HRESULT, S_OK};
-use winapi::um::handleapi::*;
-use winapi::um::processthreadsapi::*;
+use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
+use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION};
 use winapi::um::winbase::{
     CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 use winapi::um::wincon::COORD;
 use winapi::um::winnt::HANDLE;
+
+// HMODULE = HANDLE，但 HMODULE 需要 winnt feature；直接用 HANDLE 等效
+type HModule = HANDLE;
+
+use std::ffi::OsString;
+use std::io::Error as IoError;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::sync::Mutex;
+
+use crate::cmdbuilder::CommandBuilder;
+use crate::win::procthreadattr::ProcThreadAttributeList;
+use super::WinChild;
 
 pub type HPCON = HANDLE;
 
@@ -30,40 +48,65 @@ pub const PSEUDOCONSOLE_WIN32_INPUT_MODE: DWORD = 0x4;
 #[allow(dead_code)]
 pub const PSEUDOCONSOLE_PASSTHROUGH_MODE: DWORD = 0x8;
 
-shared_library!(ConPtyFuncs,
-    pub fn CreatePseudoConsole(
-        size: COORD,
-        hInput: HANDLE,
-        hOutput: HANDLE,
-        flags: DWORD,
-        hpc: *mut HPCON
-    ) -> HRESULT,
-    pub fn ResizePseudoConsole(hpc: HPCON, size: COORD) -> HRESULT,
-    pub fn ClosePseudoConsole(hpc: HPCON),
-);
+type CreatePseudoConsoleFn =
+    extern "system" fn(COORD, HANDLE, HANDLE, DWORD, *mut HPCON) -> HRESULT;
+type ResizePseudoConsoleFn = extern "system" fn(HPCON, COORD) -> HRESULT;
+type ClosePseudoConsoleFn = extern "system" fn(HPCON);
+
+pub struct ConPtyFuncs {
+    pub CreatePseudoConsole: CreatePseudoConsoleFn,
+    pub ResizePseudoConsole: ResizePseudoConsoleFn,
+    pub ClosePseudoConsole: ClosePseudoConsoleFn,
+}
+
+/// 从 DLL 中按名字解析一个导出函数指针
+macro_rules! load_symbol {
+    ($dll:expr, $name:literal) => {{
+        let cname = concat!($name, "\0");
+        let raw = unsafe { GetProcAddress($dll, cname.as_ptr() as *const i8) };
+        if raw.is_null() {
+            unsafe { FreeLibrary($dll) };
+            return Err(());
+        }
+        unsafe { std::mem::transmute::<_, _>(raw) }
+    }};
+}
+
+/// 加载指定 DLL 并解析三个 ConPTY 导出函数；任一缺失或加载失败返回 Err
+fn load_conpty_impl(path: &Path) -> Result<ConPtyFuncs, ()> {
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let dll = unsafe { LoadLibraryW(path_wide.as_ptr()) };
+    if dll.is_null() {
+        return Err(());
+    }
+
+    Ok(ConPtyFuncs {
+        CreatePseudoConsole: load_symbol!(dll, "CreatePseudoConsole"),
+        ResizePseudoConsole: load_symbol!(dll, "ResizePseudoConsole"),
+        ClosePseudoConsole: load_symbol!(dll, "ClosePseudoConsole"),
+    })
+}
 
 fn load_conpty() -> ConPtyFuncs {
-    // If the kernel doesn't export these functions then their system is
-    // too old and we cannot run.
-    let kernel = ConPtyFuncs::open(Path::new("kernel32.dll")).expect(
-        "this system does not support conpty.  Windows 10 October 2018 or newer is required",
-    );
-
-    // 优先使用侧载的 conpty.dll + OpenConsole.exe 宿主（wezterm 自带），
-    // 避免系统 conhost 的已知缺陷（如旧版 Windows 上 ClosePseudoConsole 挂死）。
-    // 1) 上层显式指定的打包目录（与模块包同目录）
+    // 优先：侧载目录下的 conpty.dll（上层指定）
     if let Some(dir) = crate::CONPTY_DIR.get() {
         let p = dir.join("conpty.dll");
-        if let Ok(sideloaded) = ConPtyFuncs::open(&p) {
-            return sideloaded;
+        if let Ok(funcs) = load_conpty_impl(&p) {
+            return funcs;
         }
     }
-    // 2) 应用目录/标准 DLL 搜索路径下的 conpty.dll（兼容 wezterm 自身部署）
-    if let Ok(sideloaded) = ConPtyFuncs::open(Path::new("conpty.dll")) {
-        sideloaded
-    } else {
-        kernel
+    // 次优：标准 DLL 搜索路径下的 conpty.dll（兼容 wezterm 自身部署）
+    if let Ok(funcs) = load_conpty_impl(Path::new("conpty.dll")) {
+        return funcs;
     }
+    // 回退：系统 kernel32.dll（Windows 10 1809+ 均内置 ConPTY）
+    load_conpty_impl(Path::new("kernel32.dll")).expect(
+        "this system does not support conpty.  Windows 10 October 2018 or newer is required",
+    )
 }
 
 lazy_static! {

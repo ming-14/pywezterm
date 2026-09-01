@@ -13,3 +13,12 @@
   cmd.exe 中会变成字面反斜杠
 - `pywezterm.Pty.spawn` 新增可选参数 `raw_cmdline`（Windows），透传到 CommandBuilder
 - 原 `append_quoted` 保持 `\"` 转义不变（bash/python/node 等 C 运行时/POSIX 场景正确）
+
+### Windows x86 栈破坏修复（wezterm\pty\src\win\psuedocon.rs + wezterm\pty\Cargo.toml）
+- 修改原 wezterm（wezterm\pty）：`shared_library!` 宏生成 `extern "Rust"` 函数指针，
+  与 Win32 API 的 `stdcall` 调用约定不匹配，在 32 位 Windows 上调用
+  `CreatePseudoConsole` 时栈破坏（segfault）；64 位恰好兼容未暴露。
+- 改为手动 `LoadLibraryW`/`GetProcAddress` 解析 ConPTY 函数，函数指针类型为
+  `extern "system"`（x86 = stdcall，x64 = C，正确匹配 Win32 API）。
+- `wezterm\pty\Cargo.toml`：移除不再使用的 `shared_library` 依赖，winapi 补
+  `libloaderapi`/`winbase`/`wincon`/`minwinbase` features。
