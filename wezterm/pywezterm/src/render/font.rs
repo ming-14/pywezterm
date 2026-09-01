@@ -18,23 +18,26 @@ use fontdue::{Font, FontSettings, Metrics};
 const PREFERRED_FAMILIES: &[&str] = &["Maple Mono NF CN", "MapleMono NF CN"];
 /// 随构建分发的字体目录候选（相对当前工作目录 / 模块路径）
 const FONT_DIR_CANDIDATES: &[&str] = &["src/assets/fonts"];
-/// 主字体族候选（按序回退）
-const ASCII_FAMILIES: &[&str] = &["Consolas", "Cascadia Mono", "DejaVu Sans Mono", "Menlo"];
-/// 符号字体族候选（✔✘⚠★ 等；Windows 优先 Segoe UI Symbol）
+/// 主字体族候选（按序回退；字母序，无平台偏好——各平台系统字体覆盖面不同）
+const ASCII_FAMILIES: &[&str] = &["Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Menlo"];
+/// 符号字体族候选（✔✘⚠★ 等；字母序，无平台偏好）
 const SYMBOL_FAMILIES: &[&str] = &[
-    "Segoe UI Symbol",
-    "Segoe UI Emoji",
+    "Apple Symbols",
     "DejaVu Sans",
-    "Symbola",
     "Noto Sans Symbols",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Symbola",
 ];
-/// CJK 字体族候选（按序回退；Windows 优先微软雅黑）
+/// CJK 字体族候选（按序回退；字母序，无平台偏好）
 const CJK_FAMILIES: &[&str] = &[
+    "DengXian",
+    "Hiragino Sans GB",
     "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    "PingFang SC",
     "SimHei",
     "SimSun",
-    "DengXian",
-    "Noto Sans CJK SC",
     "WenQuanYi Micro Hei",
 ];
 

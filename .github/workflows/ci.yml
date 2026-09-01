@@ -1,0 +1,160 @@
+# pywezterm 跨平台 CI：构建 + 测试 + tag 发布
+#
+# 矩阵：
+#   Windows amd64 / x86 / ARM64(仅交叉编译构建，无原生 runner)
+#   Linux x64 / ARM64(native ARM64 runner)
+#   macOS Intel x64 / Apple Silicon arm64
+#
+# 构建用 maturin（自动匹配 Python 架构与 MSVC 环境）；
+# Windows ARM64 交叉编译需额外安装 ARM64 MSVC 工具链，失败不阻塞其余平台
+# （continue-on-error）；产物 wheel 上传 artifact；原生可运行平台跑 pytest。
+# 打 v* tag 自动创建/更新 GitHub Release 并附带 sha256。
+
+name: CI
+
+on:
+  push:
+    branches:
+      - "*"
+      - "*/*"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.continue_on_error || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            os: windows-latest
+            python-arch: x64
+            targets: ""
+            test: true
+          - name: windows-x86
+            os: windows-latest
+            python-arch: x86
+            targets: "i686-pc-windows-msvc"
+            test: true
+          - name: windows-arm64
+            os: windows-latest
+            python-arch: x64
+            targets: "aarch64-pc-windows-msvc"
+            test: false     # 无 ARM64 Windows 原生 runner，仅交叉编译
+            continue_on_error: true
+          - name: linux-x64
+            os: ubuntu-latest
+            python-arch: ""
+            targets: ""
+            test: true
+          - name: linux-arm64
+            os: ubuntu-24.04-arm   # GitHub ARM64 Linux 原生 runner
+            python-arch: ""
+            targets: ""
+            test: true
+          - name: macos-x64
+            os: macos-13           # Intel
+            python-arch: ""
+            targets: ""
+            test: true
+          - name: macos-arm64
+            os: macos-14           # Apple Silicon
+            python-arch: ""
+            targets: ""
+            test: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target (cross-compile)
+        if: matrix.targets != ''
+        run: rustup target add ${{ matrix.targets }}
+
+      - name: Install ARM64 MSVC toolchain (Windows ARM64 cross)
+        if: matrix.targets == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          choco install visualstudio2022buildtools -y --no-progress `
+            --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools `
+            --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            --add Microsoft.VisualStudio.Component.VC.Llvm.ARM64 `
+            --includeRecommended --quiet --wait --norestart"
+          # 刷新 PATH 使 vswhere 可用（新安装的 VS 组件）
+          $env:Path = "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer;$env:Path"
+          vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python-arch }}
+
+      - name: Install build deps
+        run: python -m pip install --upgrade pip maturin pytest
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          TARGET_ARGS=""
+          if [ -n "${{ matrix.targets }}" ]; then
+            TARGET_ARGS="--target ${{ matrix.targets }}"
+          fi
+          python -m maturin build --release --out target/wheels $TARGET_ARGS
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: target/wheels/*.whl
+
+      - name: Install wheel
+        if: matrix.test
+        run: python -m pip install --force-reinstall target/wheels/*.whl
+
+      - name: Run tests
+        if: matrix.test
+        run: python -m pytest tests/ -v
+
+  release:
+    name: Release
+    # 打 tag 且未被取消时运行；continue-on-error 的 arm64 失败不阻塞（发布已成功构建的 wheel）
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksum
+        run: |
+          cd dist
+          sha256sum *.whl > SHA256SUMS.txt
+          ls -la
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          # 已存在则补传资产（重新触发），否则新建
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/*.whl dist/SHA256SUMS.txt \
+              --title "$TAG" \
+              --notes "pywezterm $TAG"
+          fi

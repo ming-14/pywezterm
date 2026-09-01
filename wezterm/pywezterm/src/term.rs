@@ -356,9 +356,8 @@ impl PyTerminal {
             env!("CARGO_PKG_VERSION"),
             Box::new(CaptureWriter(capture.clone())),
         );
-        // 启用 ConPTY 语义：resize 时内容锚顶、光标绑定文本行（保留 scrollback），
-        // 与 Windows ConPTY 的实际 resize 行为一致，避免 resize 后快照光标
-        // 与 ConPTY 实测光标不一致。同时抑制初始 title OSC。
+        // 启用锚顶 resize 语义：resize 时内容锚顶、光标绑定文本行（保留 scrollback），
+        // 各平台行为一致，避免 resize 后快照光标位置变化。同时抑制初始 title OSC。
         let mut terminal = terminal;
         terminal.enable_conpty_quirks();
         Ok(Self {

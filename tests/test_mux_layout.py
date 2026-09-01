@@ -10,9 +10,9 @@ import pywezterm
 
 def _shell_argv():
     """跨平台返回一个立即退出的命令（仅用于占位建 pane，不关心输出）"""
-    if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", "exit"]
-    return ["/bin/sh", "-c", "true"]
+    if os.name == "posix":
+        return ["/bin/sh", "-c", "true"]
+    return [os.environ.get("COMSPEC", "cmd.exe"), "/c", "exit"]
 
 
 def _mux(cols, rows, n):

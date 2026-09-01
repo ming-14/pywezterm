@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "wezterm-py"
+name = "pywezterm"
 version = "0.1.0"
 description = "wezterm as a standalone python library: pty engine and terminal emulator"
 requires-python = ">=3.8"
@@ -11,14 +11,16 @@ license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
 ]
 
 [tool.maturin]
 manifest-path = "wezterm/pywezterm/Cargo.toml"
 module-name = "pywezterm"
-# 侧载 wezterm 自带 OpenConsole 宿主（conpty.dll + OpenConsole.exe），
-# 随 wheel 装入 pywezterm 包目录（与 .pyd 同目录），避免使用系统 conhost
+# ConPTY 侧载二进制由 build.rs 在 Windows x64 构建时复制到 OUT_DIR/conpty/，
+# 此处从 OUT_DIR 打包进 wheel 的 pywezterm/ 包目录；其余平台/架构（含
+# Windows ARM64/i386）无匹配文件，走系统内核 ConPTY，wheel 不含 Windows 二进制
 include = [
-  { path = "pywezterm/conpty.dll", format = "wheel" },
-  { path = "pywezterm/OpenConsole.exe", format = "wheel" },
+  { path = "conpty/*", from = "out-dir", to = "pywezterm/" },
 ]

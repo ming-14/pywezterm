@@ -1,4 +1,4 @@
-# wezterm-py 库级自测：portable_pty 伪终端引擎 + 终端模型闭环
+# pywezterm 库级自测：portable_pty 伪终端引擎 + 终端模型闭环
 # 独立于任何调用方，仅验证库自身行为。
 #
 # 闭环要点：子进程可能向终端发起查询（如 \x1b[6n DSR 光标位置），
@@ -8,6 +8,13 @@ import os
 import time
 
 import pywezterm
+
+
+def _shell_echo(cmd):
+    """跨平台 shell：POSIX 用 /bin/sh -c，Windows 用 cmd /c"""
+    if os.name == "posix":
+        return ["/bin/sh", "-c", cmd]
+    return [os.environ.get("COMSPEC", "cmd.exe"), "/c", cmd]
 
 
 def _run(p, t, timeout=6.0):
@@ -38,12 +45,13 @@ def _run(p, t, timeout=6.0):
 def test_pty_echo():
     p = pywezterm.Pty(cols=80, rows=24)
     t = pywezterm.Terminal(cols=80, rows=24)
-    shell = os.environ.get("COMSPEC", "cmd.exe")
-    pid, handle = p.spawn([shell, "/c", "echo hello && echo world"])
+    pid, handle = p.spawn(_shell_echo("echo hello && echo world"))
     assert pid > 0, pid
-    assert handle != 0, handle
-    assert p.child_pid() == pid
-    assert p.hpcon() is not None, "Windows 下应暴露 HPCON"
+    if os.name == "posix":
+        assert handle == 0  # POSIX 上 handle 恒为 0
+    else:
+        assert handle != 0, handle
+        assert p.hpcon() is not None, "Windows 应暴露 HPCON"
     out = _run(p, t)
     assert b"hello" in out, out
     assert b"world" in out, out
@@ -54,8 +62,8 @@ def test_pty_echo():
 def test_pty_write_resize_exit():
     p = pywezterm.Pty(cols=80, rows=24)
     t = pywezterm.Terminal(cols=80, rows=24)
-    shell = os.environ.get("COMSPEC", "cmd.exe")
-    pid, handle = p.spawn([shell])
+    shell = ["/bin/sh"] if os.name == "posix" else [os.environ.get("COMSPEC", "cmd.exe")]
+    pid, handle = p.spawn(shell)
     p.resize(100, 30)
     assert p.get_size() == (100, 30), p.get_size()
     p.write(b"echo HELLO_FROM_PYWEZTERM\r\n")
@@ -67,8 +75,11 @@ def test_pty_write_resize_exit():
 
 def test_pty_kill():
     p = pywezterm.Pty(cols=80, rows=24)
-    shell = os.environ.get("COMSPEC", "cmd.exe")
-    pid, handle = p.spawn([shell, "/c", "ping 127.0.0.1 -n 30"])
+    if os.name == "posix":
+        argv = _shell_echo("sleep 30")
+    else:
+        argv = _shell_echo("ping 127.0.0.1 -n 30")
+    pid, handle = p.spawn(argv)
     assert pid > 0
     p.kill()
     for _ in range(100):

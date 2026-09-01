@@ -1,11 +1,11 @@
-//! 系统剪贴板读写绑定（winapi 实现）
+//! 系统剪贴板读写绑定（Windows 平台用 winapi 实现）
 //!
 //! 宿主侧剪贴板读写（选区复制 / 宿主粘贴 / OSC 52 应用剪贴板写），
 //! 统一由绑定层提供：
-//! - clipboard_read()：读纯文本（CF_UNICODETEXT）
-//! - clipboard_write(text)：写纯文本（UTF-16LE）
+//! - clipboard_read()：读纯文本
+//! - clipboard_write(text)：写纯文本
 //!
-//! 与 ConsoleInput 同级的宿主 OS 交互；非 Windows 返回空/静默忽略。
+//! 仅 Windows 有宿主剪贴板实现；其余平台为占位（返回空/静默忽略）。
 
 use pyo3::prelude::*;
 #[cfg(windows)]

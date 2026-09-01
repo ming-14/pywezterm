@@ -142,7 +142,7 @@ struct PaneInner {
     eof: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
     reader_thread: Arc<Mutex<Option<usize>>>,
-    /// resize 后 pending 的 ConPTY repaint（纯重绘 \x1b[?25l\x1b[H），
+    /// resize 后 pending 的 repaint（纯重绘 \x1b[?25l\x1b[H），
     /// 读者跳过直到遇到第一个非 repaint 内容，防止窄化 wrap 段污染
     repaint_pending: Arc<AtomicBool>,
 }
@@ -477,7 +477,7 @@ fn build_pane(
     });
 
     // reader 线程：读 pty 输出 → 喂终端 → 把终端应答自动回写 pty writer。
-    // 阻塞读发生在库内部线程；close 时经 CancelSynchronousIo 取消（Windows）。
+    // 阻塞读发生在库内部线程；close 时按平台取消（如 CancelSynchronousIo）。
     let terminal_c = terminal.clone();
     let capture_c = capture.clone();
     let writer_c = writer.clone();
@@ -496,11 +496,8 @@ fn build_pane(
                 }
             }
         }
-        // ConPTY resize 后发送多次 repaint（\x1b[?25l\x1b[8;...t\x1b[H + 可见区
-        // 或 \x1b[?25l\x1b[H + 可见区），是 ConPTY 修剪后的可见区，直接 feed
-        // 会污染 terminal 的 scrollback（如 age.json 孤立）。整段跳过。
-        // ConPTY resize 后发送多次 repaint（\x1b[?25l\x1b[8;...t\x1b[H + 可见区
-        // 或 \x1b[?25l\x1b[H + 可见区），是 ConPTY 修剪后的可见区，直接 feed
+        // resize 后宿主发送 repaint 序列（\x1b[?25l\x1b[8;...t\x1b[H + 可见区
+        // 或 \x1b[?25l\x1b[H + 可见区），是修剪后的可见区，直接 feed
         // 会污染 terminal 的 scrollback（如窄化时孤立 wrap 段）。跳过。
         // 带窗口尺寸的（\x1b[8;）总是跳过；纯重绘（\x1b[?25l\x1b[H，无窗口尺寸）
         // 在 resize 后（repaint_pending 标志）跳过，遇到第一个非 repaint 内容
@@ -979,7 +976,7 @@ impl PyMux {
     }
 
     /// 设置左右分屏分隔线位置（列）；None 回退中点。
-    /// 只重算矩形并标志 pane 重写（预览），不实时 resize ConPTY——
+    /// 只重算矩形并标志 pane 重写（预览），不实时 resize pty——
     /// 宿主在拖拽结束后调用 resize() 才一次到位（避免拖动中反复窄化裂行）。
     fn set_split_col(&self, split: Option<usize>) -> PyResult<()> {
         let mut st = self.inner.lock().unwrap();
@@ -1027,7 +1024,7 @@ impl PyMux {
             let w = rect.w.max(1);
             let h = rect.h.max(1);
             // 全程持有 terminal 锁（master.resize 之前就锁）：
-            // master.resize（ConPTY）触发 repaint 后，reader 线程读到的
+            // master.resize 触发 repaint 后，reader 线程读到的
             // repaint 字节因 terminal 锁被持有而无法 feed，阻塞到
             // terminal.resize（rewrap）完成之后——此时 terminal 已 rewrap
             // 完毕，reader 再 feed 的 repaint（被跳过）不会与 rewrap
@@ -1051,7 +1048,7 @@ impl PyMux {
                 })
                 .map_err(|e| PyRuntimeError::new_err(format!("resize 失败: {e:#}")))?;
             }
-            // 标记 ConPTY repaint pending：resize 后的纯重绘（无窗口尺寸）将被
+            // 标记 repaint pending：resize 后的纯重绘（无窗口尺寸）将被
             // reader 跳过，防止窄化 wrap 段污染 scrollback；遇到第一个非
             // repaint 内容自动清除（reader 线程逻辑）。
             st.panes[id]
@@ -1082,7 +1079,7 @@ impl PyMux {
             // 内容 reflow 后旧 Surface 格子失效：重置基线下帧全量重写；
             *st.panes[id].last_seqno.lock().unwrap() = None;
             *st.panes[id].last_view.lock().unwrap() = 0;
-            // 释放 terminal 锁（ConPTY repaint 字节将在锁释放后被
+            // 释放 terminal 锁（repaint 字节将在锁释放后被
             // reader 线程读取并跳过，terminal 已 rewrap 完毕）
             drop(term);
         }

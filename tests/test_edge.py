@@ -1,4 +1,4 @@
-# wezterm-py 库级边界自测：CJK 宽字符 / UTF-8 中文 / 大输出 / 异常 / close 幂等
+# pywezterm 库级边界自测：CJK 宽字符 / UTF-8 中文 / 大输出 / 异常 / close 幂等
 
 import os
 import sys
@@ -47,7 +47,7 @@ def test_cjk_wide_width():
 
 
 def test_utf8_chinese_pty():
-    """UTF-8 中文经 pty 往返（python 子进程输出到 ConPTY 恒为 UTF-8）"""
+    """UTF-8 中文经 pty 往返（子进程输出恒为 UTF-8）"""
     p = pywezterm.Pty(cols=80, rows=24)
     t = pywezterm.Terminal(cols=80, rows=24)
     p.spawn([sys.executable, "-c", "print('你好世界')"])
@@ -69,10 +69,13 @@ def test_large_output():
 
 
 def test_spawn_failure():
-    """spawn 不存在的程序应抛异常"""
+    """spawn 不存在的程序应抛异常（跨平台：POSIX 用绝对路径，Windows 用 .exe 路径）"""
     p = pywezterm.Pty(cols=80, rows=24)
     try:
-        p.spawn([r"C:\nonexistent_program_xyz_12345.exe"])
+        if os.name == "posix":
+            p.spawn(["/nonexistent_program_xyz_12345"])
+        else:
+            p.spawn([r"C:\nonexistent_program_xyz_12345.exe"])
         raise AssertionError("spawn 应抛异常")
     except Exception:
         pass
@@ -82,8 +85,11 @@ def test_spawn_failure():
 def test_close_idempotent():
     """close 幂等；close 前先排空剩余输出，之后 read 返回空"""
     p = pywezterm.Pty(cols=80, rows=24)
-    shell = os.environ.get("COMSPEC", "cmd.exe")
-    p.spawn([shell, "/c", "echo hi"])
+    if os.name == "posix":
+        argv = ["/bin/sh", "-c", "echo hi"]
+    else:
+        argv = [os.environ.get("COMSPEC", "cmd.exe"), "/c", "echo hi"]
+    p.spawn(argv)
     # 排空输出
     for _ in range(20):
         if not p.read(4096, timeout=0.2):

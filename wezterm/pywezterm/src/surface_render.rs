@@ -228,12 +228,11 @@ pub(crate) fn render_changes_bytes(changes: &[Change], cols: usize, rows: usize)
     Ok(out)
 }
 
-/// 把渲染字节里的 ITU T.416 冒号 SGR 颜色序列归一化为 Windows 终端识别的分号格式。
+/// 把渲染字节里的 ITU T.416 冒号 SGR 颜色序列归一化为传统分号格式。
 ///
 /// termwiz escape-parser 对 16 色以上的 PaletteIndex / TrueColor 输出
 /// `\x1b[38:5:Nm` / `\x1b[38:2::R:G:Bm`（冒号分隔，T.416 扩展语法），
-/// 但 Windows 终端（conhost / OpenConsole / Windows Terminal）只认
-/// `\x1b[38;5;Nm` / `\x1b[38;2;R;G;Bm`，冒号形式会被整体丢弃导致颜色丢失。
+/// 但冒号形式在部分终端中可能不被识别，分号兼容性更广。
 /// 这里把 `38/48/58` 颜色参数的冒号分隔改为分号分隔，并去掉 T.416 的
 /// 空位（`38:2::R:G:B` 双冒号后是 colorspace 空槽）。
 fn normalize_sgr_colon(buf: &[u8]) -> Vec<u8> {
@@ -251,7 +250,7 @@ fn normalize_sgr_colon(buf: &[u8]) -> Vec<u8> {
                 if is_color {
                     out.extend_from_slice(&[CSI, b'[']);
                     // 整体按冒号分段、跳过 T.416 空槽（如 38:2::R:G:B 的双冒号
-                    // 是 colorspace 空位），用分号重连成 Windows 识别的形式
+                    // 是 colorspace 空位），用分号重连成兼容性更广的形式
                     let mut first = true;
                     for seg in params.split(|&b| b == b':') {
                         if seg.is_empty() {

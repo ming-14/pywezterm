@@ -6,7 +6,6 @@
 #  4. mouse 命中路由 + 坐标换算（整屏 → pane 内），未命中报错。
 
 import os
-import sys
 import time
 
 import pywezterm
@@ -14,15 +13,15 @@ import pytest
 
 
 def _shell_echo(tag):
-    if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", f"echo {tag}"]
-    return ["/bin/sh", "-c", f"echo {tag}"]
+    if os.name == "posix":
+        return ["/bin/sh", "-c", f"echo {tag}"]
+    return [os.environ.get("COMSPEC", "cmd.exe"), "/c", f"echo {tag}"]
 
 
 def _shell_interactive():
-    if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe")]
-    return ["/bin/sh"]
+    if os.name == "posix":
+        return ["/bin/sh"]
+    return [os.environ.get("COMSPEC", "cmd.exe")]
 
 
 def _wait_text(m, pane, needle, timeout=6.0):

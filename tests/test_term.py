@@ -1,4 +1,4 @@
-# wezterm-py 库级自测：wezterm-term 终端模型 + 输入编码
+# pywezterm 库级自测：wezterm-term 终端模型 + 输入编码
 # 独立于任何调用方，仅验证库自身行为。
 
 import pywezterm
@@ -62,13 +62,13 @@ def test_scrollback():
 
 
 def test_resize_cursor_bind():
-    """enable_conpty_quirks：resize 时光标绑定原文本行（与 Windows ConPTY 一致）
+    """resize 时光标绑定原文本行（锚顶语义）
 
-    旧行为（未启用 conpty_quirks）为"底部重力"：grow 时光标移到新视口底部，
-    与 ConPTY 实测光标不一致，导致 resize 后按键回显在显示内容中间。
+    旧行为（未启用锚顶）为"底部重力"：grow 时光标移到新视口底部，
+    导致 resize 后按键回显在显示内容中间。
     """
     t = pywezterm.Terminal(cols=80, rows=24, scrollback=10000)
-    # 40 行输出填满 scrollback + 视口（模拟 cmd 批量 echo 场景）
+    # 40 行输出填满 scrollback + 视口（模拟批量 echo 场景）
     for i in range(1, 41):
         t.feed(f"LINE{i}-aaaaaaaaaaaaaaaaaaaa\r\n".encode())
     # 光标定位到 prompt 行 (0-based 23, col 15)

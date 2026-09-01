@@ -29,8 +29,8 @@ struct PtyInner {
     buf: Arc<Mutex<VecDeque<u8>>>,
     eof: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
-    /// reader 线程的（复制的）原生句柄，close 时用于 CancelSynchronousIo
-    /// 取消其阻塞的同步 ReadFile（仅 Windows 设置）
+    /// reader 线程的（复制的）原生句柄，close 时用于取消阻塞读
+    /// （仅部分平台需要）
     reader_thread: Arc<Mutex<Option<usize>>>,
 }
 

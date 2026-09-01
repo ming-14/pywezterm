@@ -3,8 +3,7 @@
 //! 颜色支持 default / p<N> 调色板索引 / #rrggbb / 6 位 hex；
 //! 网格度量与 SVG/ANSI 输出像素级一致（CELL_W=8, CELL_H=17）。
 
-/// 单元格网格度量：行高取 Windows GDI 实测（Consolas 14px 的 tmHeight=17），
-/// 与 SVG/ANSI 输出保持像素级一致
+/// 单元格网格常量（与 SVG/ANSI 输出保持像素级一致）
 pub const CELL_W: usize = 8;
 pub const CELL_H: usize = 17;
 

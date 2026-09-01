@@ -13,15 +13,15 @@ import pywezterm
 
 def _shell_echo(tag):
     """跨平台返回一个输出 tag 后立即退出的命令"""
-    if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", f"echo {tag}"]
-    return ["/bin/sh", "-c", f"echo {tag}"]
+    if os.name == "posix":
+        return ["/bin/sh", "-c", f"echo {tag}"]
+    return [os.environ.get("COMSPEC", "cmd.exe"), "/c", f"echo {tag}"]
 
 
 def _shell_interactive():
-    if os.name == "nt":
-        return [os.environ.get("COMSPEC", "cmd.exe")]
-    return ["/bin/sh"]
+    if os.name == "posix":
+        return ["/bin/sh"]
+    return [os.environ.get("COMSPEC", "cmd.exe")]
 
 
 def _wait_text(m, pane, needle, timeout=6.0):
@@ -55,8 +55,8 @@ def test_mux_multiple_panes_isolated():
     try:
         p0 = m.add_pane(_shell_echo("ALPHA"))
         p1 = m.add_pane(_shell_echo("BETA"))
-        assert _wait_text(m, p0, "ALPHA").__contains__("ALPHA")
-        assert _wait_text(m, p1, "BETA").__contains__("BETA")
+        assert "ALPHA" in _wait_text(m, p0, "ALPHA")
+        assert "BETA" in _wait_text(m, p1, "BETA")
         t0, t1 = m.pane_text(p0), m.pane_text(p1)
         assert "BETA" not in t0, t0
         assert "ALPHA" not in t1, t1
@@ -76,7 +76,7 @@ def test_mux_keyboard_encoding_downstream():
             assert isinstance(out, bytes) and out, out
             time.sleep(0.02)
         m.pane_key_down(pane, "Enter", 0)
-        # 键入字符被 shell 回显到终端模型（Windows cmd 逐字回显）
+        # 键入字符被 shell 回显到终端模型
         t = _wait_text(m, pane, text)
         assert text in t, t
     finally:
