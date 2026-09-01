@@ -118,10 +118,19 @@ jobs:
 
       - name: Install wheel
         if: matrix.test
+        shell: bash
         run: python -m pip install --force-reinstall target/wheels/*.whl
+
+      # 删除源码 pywezterm/ 目录，避免 pytest 的 sys.path 命中源码空壳
+      # （只有 from .pywezterm import *）而遮蔽已安装的 wheel 包
+      - name: Remove source package (test isolation)
+        if: matrix.test
+        shell: bash
+        run: rm -rf pywezterm
 
       - name: Run tests
         if: matrix.test
+        shell: bash
         run: python -m pytest tests/ -v
 
   release:
