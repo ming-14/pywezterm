@@ -249,13 +249,17 @@ impl PyPty {
         loop {
             {
                 let mut b = self.inner.buf.lock().unwrap();
+                // 先判断 closed：close 后无论缓冲是否残留都返回空。
+                // reader 线程可能在 close 清空缓冲后仍写入残留数据，若先查
+                // buf 再查 closed，close 后仍可能返回数据。
+                if self.inner.closed.load(Ordering::SeqCst) {
+                    return vec![];
+                }
                 if !b.is_empty() {
                     let take = b.len().min(n);
                     return b.drain(..take).collect();
                 }
-                if self.inner.eof.load(Ordering::SeqCst)
-                    || self.inner.closed.load(Ordering::SeqCst)
-                {
+                if self.inner.eof.load(Ordering::SeqCst) {
                     return vec![];
                 }
             }
