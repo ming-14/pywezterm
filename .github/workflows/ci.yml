@@ -136,6 +136,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download wheels
         uses: actions/download-artifact@v4
         with:
@@ -153,11 +156,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
           # 已存在则补传资产（重新触发），否则新建
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.whl dist/SHA256SUMS.txt --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl dist/SHA256SUMS.txt --repo "$REPO" --clobber
           else
             gh release create "$TAG" dist/*.whl dist/SHA256SUMS.txt \
+              --repo "$REPO" \
               --title "$TAG" \
               --notes "pywezterm $TAG"
           fi
