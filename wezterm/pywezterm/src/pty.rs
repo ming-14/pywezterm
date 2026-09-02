@@ -355,7 +355,7 @@ impl PyPty {
     }
 
     /// 关闭伪终端（终止子进程 + 取消 reader 阻塞读 + 释放 master/slave
-    /// 关闭 HPCON 解除 reader 阻塞，幂等）
+    /// 关闭 HPCON 解除 reader 阻塞，幂等；close 后 read 返回空）
     fn close(&self) {
         if self.inner.closed.swap(true, Ordering::SeqCst) {
             return;
@@ -374,5 +374,7 @@ impl PyPty {
         // ClosePseudoConsole → conhost 退出 → reader 线程退出
         *self.inner.master.lock().unwrap() = None;
         *self.inner._slave.lock().unwrap() = None;
+        // 清空 reader 线程可能已缓冲的残留数据，确保 close 后 read 为空
+        self.inner.buf.lock().unwrap().clear();
     }
 }
