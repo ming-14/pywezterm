@@ -42,11 +42,10 @@ jobs:
             targets: "i686-pc-windows-msvc"
             test: true
           - name: windows-arm64
-            os: windows-latest
-            python-arch: x64
-            targets: "aarch64-pc-windows-msvc"
-            test: false     # 无 ARM64 Windows 原生 runner，仅交叉编译
-            continue_on_error: true
+            os: windows-11-arm   # GitHub ARM64 Windows 原生 runner
+            python-arch: ""
+            targets: ""
+            test: true
           - name: linux-x64
             os: ubuntu-latest
             python-arch: ""
@@ -54,11 +53,6 @@ jobs:
             test: true
           - name: linux-arm64
             os: ubuntu-24.04-arm   # GitHub ARM64 Linux 原生 runner
-            python-arch: ""
-            targets: ""
-            test: true
-          - name: macos-x64
-            os: macos-13           # Intel
             python-arch: ""
             targets: ""
             test: true
