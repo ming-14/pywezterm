@@ -83,6 +83,10 @@ def test_mux_scroll_render_reflects_and_restores():
             m.pane_write(p, ("echo LINE%02d\r\n" % i).encode())
             time.sleep(0.02)
         assert _wait_text(m, p, "LINE39")
+        # 等输出稳定后再记录基准：_wait_text 刚看到 LINE39 就返回，
+        # 但 shell 的 echo 回显 + prompt 可能还在路上，滚动回落时
+        # 延迟输出到达导致内容不同（32 位 Windows 时序敏感）。
+        time.sleep(0.5)
         t_bottom = m.pane_text(p)
         assert t_bottom and "LINE39" in t_bottom
         m.render()
