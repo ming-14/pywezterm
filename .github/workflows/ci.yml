@@ -2,10 +2,12 @@
 #
 # 矩阵：
 #   Windows amd64 / x86 / ARM64(仅交叉编译构建，无原生 runner)
-#   Linux x64 / ARM64(native ARM64 runner)
+#   Linux x64 / ARM64（manylinux_2_28 容器构建，兼容 glibc 2.28+，native ARM64 runner）
 #   macOS Intel x64 / Apple Silicon arm64
 #
 # 构建用 maturin（自动匹配 Python 架构与 MSVC 环境）；
+# Linux 在 manylinux_2_28 容器内构建（PyO3/maturin-action），wheel 标签为
+# manylinux_2_28 而非 runner glibc 对应的 2_39，保证旧发行版（22.04 等）可加载；
 # Windows ARM64 交叉编译需额外安装 ARM64 MSVC 工具链，失败不阻塞其余平台
 # （continue-on-error）；产物 wheel 上传 artifact；原生可运行平台跑 pytest。
 # 打 v* tag 自动创建/更新 GitHub Release 并附带 sha256。
@@ -49,12 +51,17 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             python-arch: ""
-            targets: ""
+            targets: "x86_64-unknown-linux-gnu"
+            # manylinux_2_28（glibc 2.28）容器构建：兼容 Ubuntu 20.04+/22.04/24.04、
+            # CentOS 8+、Debian 10+。ubuntu-latest 直接构建会产出 manylinux_2_39
+            # 标签（glibc 2.39），旧系统（如 22.04）加载时 GLIBC 符号找不到。
+            manylinux: "2_28"
             test: true
           - name: linux-arm64
             os: ubuntu-24.04-arm   # GitHub ARM64 Linux 原生 runner
             python-arch: ""
-            targets: ""
+            targets: "aarch64-unknown-linux-gnu"
+            manylinux: "2_28"
             test: true
           - name: macos-arm64
             os: macos-14           # Apple Silicon
@@ -67,10 +74,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
+        if: matrix.manylinux == ''
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust target (cross-compile)
-        if: matrix.targets != ''
+        if: matrix.targets != '' && matrix.manylinux == ''
         run: rustup target add ${{ matrix.targets }}
 
       - name: Install ARM64 MSVC toolchain (Windows ARM64 cross)
@@ -93,9 +101,26 @@ jobs:
           architecture: ${{ matrix.python-arch }}
 
       - name: Install build deps
-        run: python -m pip install --upgrade pip maturin pytest
+        if: matrix.manylinux == ''
+        run: python -m pip install --upgrade pip maturin
 
-      - name: Build wheel
+      # pytest 装在 runner 环境（manylinux job 的构建在容器内，测试在 runner 上）
+      - name: Install pytest
+        run: python -m pip install --upgrade pytest
+
+      # Linux：manylinux_2_28 容器内构建（glibc 2.28），产物兼容旧系统；
+      # Rust 工具链由 maturin-action 在容器内安装
+      - name: Build wheel (Linux manylinux_2_28)
+        if: matrix.manylinux != ''
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.targets }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out target/wheels
+          rust-toolchain: stable
+
+      - name: Build wheel (native)
+        if: matrix.manylinux == ''
         shell: bash
         run: |
           TARGET_ARGS=""
