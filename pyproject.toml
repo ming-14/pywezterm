@@ -18,9 +18,14 @@ classifiers = [
 [tool.maturin]
 manifest-path = "wezterm/pywezterm/Cargo.toml"
 module-name = "pywezterm"
-# ConPTY 侧载二进制由 build.rs 在 Windows x64 构建时复制到 OUT_DIR/conpty/，
-# 此处从 OUT_DIR 打包进 wheel 的 pywezterm/ 包目录；其余平台/架构（含
-# Windows ARM64/i386）无匹配文件，走系统内核 ConPTY，wheel 不含 Windows 二进制
+# ConPTY 侧载二进制由 build.rs 在 Windows x64 构建时复制到 OUT_DIR/ 根下，
+# 此处按**单个文件名**打包进 wheel 的 pywezterm/ 包目录（与 pywezterm.pyd 同目录——
+# 加载器按 <包目录>/conpty.dll 找它，见 wezterm/pywezterm/src/pty.rs）。
+# 不要写成 { path = "conpty/*" }：maturin 的 include 会保留 glob 的目录层级，
+# 文件会落到 pywezterm/conpty/，加载器找不到，于是静默回落系统 conhost（曾如此）。
+# 其余平台/架构（含 Windows ARM64/i386）无匹配文件，走系统内核 ConPTY，
+# wheel 不含 Windows 二进制
 include = [
-  { path = "conpty/*", from = "out-dir", to = "pywezterm/" },
+  { path = "conpty.dll", from = "out-dir", to = "pywezterm/" },
+  { path = "OpenConsole.exe", from = "out-dir", to = "pywezterm/" },
 ]
