@@ -119,59 +119,91 @@ fn is_default_cell(cell: &CellTuple) -> bool {
         && !cell.8
 }
 
-/// 应用单个 DECSET/DECRST 模式
-fn apply_mode(m: &mut TermModeState, ps: u16, enable: bool) {
-    match ps {
-        1000 | 1002 | 1003 => m.mouse_tracking = if enable { ps } else { 0 },
-        1006 => m.sgr_mouse = enable,
-        1049 | 1047 | 47 => m.alt_screen = enable,
-        25 => m.cursor_visible = enable,
-        2004 => m.bracketed_paste = enable,
-        _ => {}
+/// 应用单个模式。`dec` 为真表示 `CSI ? Pm h/l`（DECSET/DECRST），否则是 `CSI Pm h/l`（SM/RM）。
+///
+/// 只记**客户端也能生效**的模式：xterm.js 不支持的那些（1005、1015 等）记了也没用，
+/// 恢复时发过去只会被忽略。
+fn apply_mode(m: &mut TermModeState, ps: u16, enable: bool, dec: bool) {
+    if dec {
+        match ps {
+            1 => m.application_cursor_keys = Some(enable),
+            6 => m.origin = Some(enable),
+            7 => m.wraparound = Some(enable),
+            12 => m.cursor_blink = Some(enable),
+            25 => m.cursor_visible = Some(enable),
+            45 => m.reverse_wraparound = Some(enable),
+            47 | 1047 | 1049 => m.alt_screen = Some(enable),
+            66 => m.application_keypad = Some(enable),
+            1000 | 1002 | 1003 => m.mouse_tracking = Some(if enable { ps } else { 0 }),
+            1004 => m.focus_reporting = Some(enable),
+            1006 => m.sgr_mouse = Some(enable),
+            1016 => m.sgr_pixels = Some(enable),
+            2004 => m.bracketed_paste = Some(enable),
+            _ => {}
+        }
+    } else {
+        match ps {
+            4 => m.insert = Some(enable),
+            20 => m.newline = Some(enable),
+            _ => {}
+        }
     }
 }
 
-/// 扫描字节流中的 DECSET/DECRST 序列（\x1b[?NNNNh/l），更新模式状态。
-/// 与宿主侧（ptyagent）此前手写的正则嗅探语义一致：备用屏幕、鼠标追踪
-/// （1000/1002/1003 互斥）、SGR 鼠标（1006）、光标可见（25）、paste（2004）。
+/// 扫描字节流中的模式设置序列，更新模式状态。
+///
+/// 两种形态都要认：`CSI ? Pm h/l`（DECSET/DECRST）与 `CSI Pm h/l`（SM/RM）。只认前者会漏掉
+/// 插入模式（`CSI 4 h`）这类没有私有前缀的模式。
+///
+/// 这里只能看到**到达我们的**序列。Windows/ConPTY 会吞掉一部分（鼠标模式、DECCKM、
+/// 光标可见、原点模式、备用屏）——那些模式应用设了我们也无从得知，自然也不可能在恢复时
+/// 补回去。这是环境限制，不是本函数的实现问题。
 fn update_mode_state(mode: &Mutex<TermModeState>, data: &[u8]) {
     let mut m = mode.lock().unwrap();
     let mut i = 0usize;
-    while i < data.len() {
-        if data[i] == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' && data[i + 2] == b'?' {
-            let mut j = i + 3;
-            let mut params: Vec<u16> = Vec::new();
-            let mut cur: u16 = 0;
-            let mut has_digit = false;
-            while j < data.len() {
-                let c = data[j];
-                if c.is_ascii_digit() {
-                    cur = cur.saturating_mul(10).saturating_add((c - b'0') as u16);
-                    has_digit = true;
-                    j += 1;
-                } else if c == b';' {
-                    params.push(cur);
-                    cur = 0;
-                    has_digit = false;
-                    j += 1;
-                } else if c == b'h' || c == b'l' {
-                    if has_digit || !params.is_empty() {
-                        params.push(cur);
-                    }
-                    let enable = c == b'h';
-                    for ps in params {
-                        apply_mode(&mut m, ps, enable);
-                    }
-                    j += 1;
-                    break;
-                } else {
-                    break;
-                }
-            }
-            i = j;
-        } else {
+    while i + 1 < data.len() {
+        if data[i] != 0x1b || data[i + 1] != b'[' {
             i += 1;
+            continue;
         }
+        let mut j = i + 2;
+        let dec = j < data.len() && data[j] == b'?';
+        if dec {
+            j += 1;
+        }
+        let mut params: Vec<u16> = Vec::new();
+        let mut cur: u16 = 0;
+        let mut has_digit = false;
+        let mut consumed = false;
+        while j < data.len() {
+            let c = data[j];
+            if c.is_ascii_digit() {
+                cur = cur.saturating_mul(10).saturating_add((c - b'0') as u16);
+                has_digit = true;
+                j += 1;
+            } else if c == b';' {
+                params.push(cur);
+                cur = 0;
+                has_digit = false;
+                j += 1;
+            } else if c == b'h' || c == b'l' {
+                if has_digit || !params.is_empty() {
+                    params.push(cur);
+                }
+                let enable = c == b'h';
+                for ps in &params {
+                    apply_mode(&mut m, *ps, enable, dec);
+                }
+                j += 1;
+                consumed = true;
+                break;
+            } else {
+                // 不是模式设置序列（例如 `CSI 1;2H`）：跳过这个 `ESC [` 继续扫
+                break;
+            }
+        }
+        // 认出来就跳过整个序列；没认出来只跳过 `ESC [`，保证线性扫描且不放过嵌套的 ESC
+        i = if consumed { j } else { i + 2 };
     }
 }
 
@@ -284,19 +316,43 @@ pub(crate) fn parse_mouse_button(s: &str) -> PyResult<MouseButton> {
     })
 }
 
-/// 终端模式状态（feed 时跟踪 DECSET/DECRST，供订阅恢复/查询）
+/// 终端模式状态（feed 时跟踪模式设置序列，供订阅恢复/查询）
+///
+/// **每个字段都是 `Option`**：`None` 表示应用从未设置过它，于是恢复时**不发**这条序列，
+/// 让客户端保留自己的默认值与配置。若记成 `bool` 并把「默认值」当成已知状态，恢复时就会
+/// 用我们以为的默认值把客户端的设置覆盖掉（例如光标闪烁）。
 #[derive(Clone, Copy, Default)]
 struct TermModeState {
-    /// 鼠标追踪模式（0=关闭，1000/1002/1003）
-    mouse_tracking: u16,
-    /// SGR 鼠标编码（DECSET 1006）
-    sgr_mouse: bool,
-    /// 备用屏幕激活（1049/1047/47）
-    alt_screen: bool,
+    /// 应用光标键（DECSET 1）
+    application_cursor_keys: Option<bool>,
+    /// 原点模式（DECSET 6）
+    origin: Option<bool>,
+    /// 自动换行（DECSET 7）
+    wraparound: Option<bool>,
+    /// 光标闪烁（DECSET 12）
+    cursor_blink: Option<bool>,
     /// 光标可见（DECSET 25）
-    cursor_visible: bool,
+    cursor_visible: Option<bool>,
+    /// 反向换行（DECSET 45）
+    reverse_wraparound: Option<bool>,
+    /// 应用键盘（DECSET 66）
+    application_keypad: Option<bool>,
+    /// 备用屏幕（47 / 1047 / 1049）
+    alt_screen: Option<bool>,
+    /// 鼠标追踪模式（0=关闭，1000/1002/1003 互斥）
+    mouse_tracking: Option<u16>,
+    /// 焦点上报（DECSET 1004）
+    focus_reporting: Option<bool>,
+    /// SGR 鼠标编码（DECSET 1006）
+    sgr_mouse: Option<bool>,
+    /// SGR 像素坐标鼠标（DECSET 1016）
+    sgr_pixels: Option<bool>,
     /// bracketed paste（DECSET 2004）
-    bracketed_paste: bool,
+    bracketed_paste: Option<bool>,
+    /// 插入模式（SM 4）
+    insert: Option<bool>,
+    /// 自动换行模式（SM 20 / LNM）
+    newline: Option<bool>,
 }
 
 /// 终端模拟器实例（Mutex 包裹以支持多线程访问）
@@ -365,10 +421,8 @@ impl PyTerminal {
             capture,
             view_offset: Mutex::new(0),
             selection: Mutex::new(SelectionState::default()),
-            mode: Mutex::new(TermModeState {
-                cursor_visible: true,
-                ..Default::default()
-            }),
+            // 全 None：表示「应用还没设置过任何模式」，恢复时不会去覆盖客户端的默认值
+            mode: Mutex::new(TermModeState::default()),
             mode_tail: Mutex::new(Vec::with_capacity(64)),
             clipboard_cb: Mutex::new(None),
             download_cb: Mutex::new(None),
@@ -778,27 +832,70 @@ impl PyTerminal {
     /// 供宿主订阅时恢复具体模式（is_mouse_grabbed 仅布尔，不含模式号）。
     fn get_mouse_encoding(&self) -> (u16, bool) {
         let m = self.mode.lock().unwrap();
-        (m.mouse_tracking, m.sgr_mouse)
+        (m.mouse_tracking.unwrap_or(0), m.sgr_mouse.unwrap_or(false))
     }
 
-    /// 生成终端模式恢复序列（新订阅者重建 xterm 状态用）：
-    /// 备用屏幕/鼠标追踪+SGR/光标可见/paste 的 DECSET 恢复前缀。
+    /// 生成终端模式恢复序列（新订阅者重建 xterm 状态用）。
+    ///
+    /// **只发应用真的设置过的那些**（`Some`）：没观察到的什么都不发，让客户端保留自己的
+    /// 默认值与配置。用「我们以为的默认值」去覆盖客户端是错的。
+    ///
+    /// 顺序有两处不能动：
+    /// - 备用屏最先：`?1049h` 会清屏，必须先进入再画内容
+    /// - 光标可见性最后：它不影响内容绘制
+    ///
+    /// 有意**不**恢复 `?2026`（同步输出）：那是逐帧的瞬时模式，打开它会让客户端一直缓冲
+    /// 渲染，等于把画面冻在最后一帧。
     fn mode_restore_seq(&self) -> String {
         let m = self.mode.lock().unwrap();
         let mut parts: Vec<String> = Vec::new();
-        if m.alt_screen {
+
+        if m.alt_screen == Some(true) {
             parts.push("\x1b[?1049h".to_string());
         }
-        if m.mouse_tracking > 0 {
-            parts.push(format!("\x1b[?{}h", m.mouse_tracking));
-            if m.sgr_mouse {
+        if let Some(tracking) = m.mouse_tracking {
+            if tracking > 0 {
+                parts.push(format!("\x1b[?{tracking}h"));
+            }
+            if m.sgr_mouse == Some(true) {
                 parts.push("\x1b[?1006h".to_string());
             }
+            if m.sgr_pixels == Some(true) {
+                parts.push("\x1b[?1016h".to_string());
+            }
         }
-        if m.bracketed_paste {
+        if m.focus_reporting == Some(true) {
+            parts.push("\x1b[?1004h".to_string());
+        }
+        if m.bracketed_paste == Some(true) {
             parts.push("\x1b[?2004h".to_string());
         }
-        if !m.cursor_visible {
+        if m.application_cursor_keys == Some(true) {
+            parts.push("\x1b[?1h".to_string());
+        }
+        if m.application_keypad == Some(true) {
+            parts.push("\x1b[?66h".to_string());
+        }
+        if m.origin == Some(true) {
+            parts.push("\x1b[?6h".to_string());
+        }
+        // 自动换行默认是**开**，所以只可能恢复它被关掉的那一侧
+        if m.wraparound == Some(false) {
+            parts.push("\x1b[?7l".to_string());
+        }
+        if m.reverse_wraparound == Some(true) {
+            parts.push("\x1b[?45h".to_string());
+        }
+        if m.insert == Some(true) {
+            parts.push("\x1b[4h".to_string());
+        }
+        if m.newline == Some(true) {
+            parts.push("\x1b[20h".to_string());
+        }
+        if let Some(blink) = m.cursor_blink {
+            parts.push(if blink { "\x1b[?12h" } else { "\x1b[?12l" }.to_string());
+        }
+        if m.cursor_visible == Some(false) {
             parts.push("\x1b[?25l".to_string());
         }
         parts.concat()
