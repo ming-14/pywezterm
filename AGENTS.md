@@ -1,5 +1,5 @@
 - 独立项目，不受上层项目影响
-- 不要在该项目任何地方提到 PTY-Agent
+- 不要把使用方的项目名、需求或上下文写进这里（含代码注释与变更记录）
 - 不要修改原wezterm：`wezterm\wezterm-char-props` `wezterm\wezterm-dynamic` `wezterm\wezterm-escape-parser` `wezterm\wezterm-input-types` `wezterm\wezterm-surface` `wezterm\Cargo.lock` `wezterm\Cargo.toml` `wezterm\LICENSE.md` `wezterm\bidi` `wezterm\color-types` `wezterm\filedescriptor` `wezterm\pty` `wezterm\target` `wezterm\term` `wezterm\termwiz` `wezterm\vtparse` `wezterm\wezterm-blob-leases` `wezterm\wezterm-cell`
 - 如果一定一定无法避免要修改，或者是wezterm本身的bug需要修改，请将变更记录写到本文档
 
