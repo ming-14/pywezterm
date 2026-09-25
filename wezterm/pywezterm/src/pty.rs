@@ -17,7 +17,22 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+
+/// 读缓冲高水位：到这里就**停止**从 PTY 读取。
+///
+/// 这是背压真正传导到 PTY 的唯一途径。没有它，reader 线程会把管道抽干、往这个缓冲里
+/// 无限堆积——上层再怎么限流也只是拦住自己，内存仍然无界增长，而子进程永远不会被
+/// 「写阻塞」逼停。加了它之后：缓冲满 → reader 不再读 → 管道满 → 子进程 write 阻塞。
+///
+/// 取值权衡：太小会让正常的突发输出频繁触发停读（增加无谓的往返），太大则允许更多
+/// 未消费数据滞留。1 MiB 足够吸收一次突发的整屏重绘，又不至于让「客户端停止消费」
+/// 这件事延迟太久才反映到子进程。
+const READ_BUFFER_HIGH: usize = 1 << 20;
+/// 低水位：降到这里才恢复读取。与高水位拉开距离，避免围绕阈值反复起停。
+const READ_BUFFER_LOW: usize = 1 << 18;
+/// 等空间的轮询周期：只是周期性复查 closed，不必很密。
+const SPACE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// 伪终端内部状态（master/slave 用 Option 便于 close 时取出关闭
 /// 以解除 reader 阻塞；二者持同一 HPCON 的 Arc 引用，须一起释放）
@@ -27,6 +42,9 @@ struct PtyInner {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     buf: Arc<Mutex<VecDeque<u8>>>,
+    /// 缓冲腾出空间（或 Pty 关闭）时唤醒 reader 线程。
+    /// 与 `buf` 的锁配对使用：等待时由 `wait_timeout` 释放该锁。
+    space: Arc<Condvar>,
     eof: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
     /// reader 线程的（复制的）原生句柄，close 时用于取消阻塞读
@@ -131,6 +149,7 @@ impl PyPty {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("openpty 失败: {e:#}")))?;
         let buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let space = Arc::new(Condvar::new());
         let eof = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(AtomicBool::new(false));
         // 先取 writer/reader（避免 master 移入结构体后无法再借用）
@@ -149,6 +168,7 @@ impl PyPty {
             writer: Mutex::new(Some(writer)),
             child: Mutex::new(None),
             buf: buf.clone(),
+            space: space.clone(),
             eof: eof.clone(),
             closed: closed.clone(),
             reader_thread: reader_thread.clone(),
@@ -156,6 +176,7 @@ impl PyPty {
         // reader 线程：阻塞读 pty 输出 → 缓冲队列；EOF 或 closed 置标志后退出。
         // 线程内先复制自身句柄供 close 时 CancelSynchronousIo 取消阻塞读，
         // 避免 ClosePseudoConsole 等待 pending read 造成死锁。
+        let space_for_reader = space.clone();
         std::thread::spawn(move || {
             #[cfg(windows)]
             {
@@ -165,9 +186,21 @@ impl PyPty {
                 }
             }
             loop {
-                if closed.load(Ordering::SeqCst) {
-                    eof.store(true, Ordering::SeqCst);
-                    break;
+                // 高水位：缓冲已满就不再从 PTY 读，让背压交给管道（见 READ_BUFFER_HIGH）
+                {
+                    let mut guard = buf.lock().unwrap();
+                    while !closed.load(Ordering::SeqCst) && guard.len() >= READ_BUFFER_HIGH {
+                        let (next, _timeout) = space_for_reader
+                            .wait_timeout(guard, SPACE_WAIT)
+                            .unwrap();
+                        guard = next;
+                    }
+                    let closed_now = closed.load(Ordering::SeqCst);
+                    drop(guard);
+                    if closed_now {
+                        eof.store(true, Ordering::SeqCst);
+                        break;
+                    }
                 }
                 let mut tmp = [0u8; 8192];
                 match reader.read(&mut tmp) {
@@ -257,7 +290,14 @@ impl PyPty {
                 }
                 if !b.is_empty() {
                     let take = b.len().min(n);
-                    return b.drain(..take).collect();
+                    let out: Vec<u8> = b.drain(..take).collect();
+                    let freed = b.len() <= READ_BUFFER_LOW;
+                    drop(b);
+                    // 腾出空间就唤醒可能停在高水位上的 reader 线程
+                    if freed {
+                        self.inner.space.notify_one();
+                    }
+                    return out;
                 }
                 if self.inner.eof.load(Ordering::SeqCst) {
                     return vec![];
@@ -273,17 +313,25 @@ impl PyPty {
     }
 
     /// 写入数据到伪终端
-    fn write(&self, data: Vec<u8>) -> PyResult<()> {
+    ///
+    /// **必须在放掉 GIL 之后再做阻塞写**：`#[pymethods]` 默认全程持有 GIL，而 PTY 写满时
+    /// `write_all` 会一直等下去。子进程只要停止读取输入（例如它正在等我们回写某个查询的
+    /// 应答），整个 Python 进程——包括 asyncio 事件循环——就会一起卡死。放到独立线程里写
+    /// 也救不了这一点，因为 GIL 不是线程能绕开的。
+    ///
+    /// 错误先降级成 `String` 再在 GIL 内构造，避免在 detach 区间里创建 Python 异常对象。
+    fn write(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<()> {
         if self.inner.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let mut w = self.inner.writer.lock().unwrap();
-        match w.as_mut() {
-            Some(w) => w
-                .write_all(&data)
-                .map_err(|e| PyRuntimeError::new_err(format!("write 失败: {e}"))),
-            None => Err(PyRuntimeError::new_err("writer 已关闭")),
-        }
+        let outcome: Result<(), String> = py.detach(|| {
+            let mut w = self.inner.writer.lock().unwrap();
+            match w.as_mut() {
+                Some(w) => w.write_all(&data).map_err(|e| format!("write 失败: {e}")),
+                None => Err("writer 已关闭".to_string()),
+            }
+        });
+        outcome.map_err(PyRuntimeError::new_err)
     }
 
     /// 调整伪终端尺寸（列/行）
@@ -301,6 +349,14 @@ impl PyPty {
             })
             .map_err(|e| PyRuntimeError::new_err(format!("resize 失败: {e:#}")))?;
         Ok(())
+    }
+
+    /// 当前在读缓冲里等待 `read` 取走的字节数。
+    ///
+    /// 存在的意义是让「读缓冲有上限」这个不变量**可被观测**：它正常不会超过
+    /// `READ_BUFFER_HIGH`。没有这个访问器，上层只能靠进程内存曲线去猜。
+    fn buffered_bytes(&self) -> usize {
+        self.inner.buf.lock().unwrap().len()
     }
 
     /// 当前伪终端尺寸 (cols, rows)
@@ -380,5 +436,7 @@ impl PyPty {
         *self.inner._slave.lock().unwrap() = None;
         // 清空 reader 线程可能已缓冲的残留数据，确保 close 后 read 为空
         self.inner.buf.lock().unwrap().clear();
+        // reader 可能正停在高水位上等空间：必须叫醒它去看 closed，否则它会一直挂着
+        self.inner.space.notify_all();
     }
 }
