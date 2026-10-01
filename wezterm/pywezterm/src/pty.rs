@@ -229,13 +229,17 @@ impl PyPty {
     /// 启动子进程到伪终端，返回 (pid, 进程句柄)
     /// raw_cmdline（Windows 可选）：提供时整个命令行原样传递（绕过 argv
     /// 引号序列化），供 cmd.exe /c 等自解析命令行的程序保留引号语义。
-    #[pyo3(signature = (argv, cwd=None, env=None, raw_cmdline=None))]
+    /// job_handle（Windows 可选）：作业对象句柄；提供时子进程在
+    /// CreateProcessW 时就进入该作业（PROC_THREAD_ATTRIBUTE_JOB_LIST），
+    /// 不存在"创建后再赋值"的时间窗。句柄由调用方持有并负责关闭。
+    #[pyo3(signature = (argv, cwd=None, env=None, raw_cmdline=None, job_handle=None))]
     fn spawn(
         &self,
         argv: Vec<String>,
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
         raw_cmdline: Option<String>,
+        job_handle: Option<usize>,
     ) -> PyResult<(u32, usize)> {
         if self.inner.closed.load(Ordering::SeqCst) {
             return Err(PyRuntimeError::new_err("Pty 已关闭"));
@@ -246,6 +250,12 @@ impl PyPty {
         if let Some(raw) = raw_cmdline {
             builder.set_raw_cmdline(raw);
         }
+        #[cfg(windows)]
+        if let Some(job) = job_handle {
+            builder.set_job_handle(job as winapi::um::winnt::HANDLE);
+        }
+        #[cfg(not(windows))]
+        let _ = job_handle;
         if let Some(cwd) = cwd {
             builder.cwd(cwd);
         }

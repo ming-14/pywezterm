@@ -22,3 +22,21 @@
   `extern "system"`（x86 = stdcall，x64 = C，正确匹配 Win32 API）。
 - `wezterm\pty\Cargo.toml`：移除不再使用的 `shared_library` 依赖，winapi 补
   `libloaderapi`/`winbase`/`wincon`/`minwinbase` features。
+
+### 创建时即入作业对象（wezterm\pty\src\cmdbuilder.rs + win\procthreadattr.rs + win\psuedocon.rs + pywezterm\src\pty.rs）
+- 修改原 wezterm（wezterm\pty）以支持把子进程**直接创建进作业对象**
+- `CommandBuilder` 新增 Windows 专属 `job_handle` 字段与 `set_job_handle()` /
+  `get_job_handle()`，与既有 `raw_cmdline` 同一模式
+- `ProcThreadAttributeList` 新增 `set_job_list()`：走
+  `PROC_THREAD_ATTRIBUTE_JOB_LIST`（`0x0002000D`），接受作业句柄数组
+- `spawn_command` 按是否带作业决定属性列表容量（2 / 1）并写入该属性。子进程在
+  `CreateProcessW` 时即入作业，**消除"创建后再 `AssignProcessToJobObject`"的时间窗**
+  ——后者存在竞态：子进程在被赋值前 fork 出的孙进程不进作业，从此既枚举不到也杀不到
+- `pywezterm.Pty.spawn` 新增可选参数 `job_handle`（Windows），透传到 CommandBuilder
+- 作业句柄由调用方创建、持有并关闭，本库不参与其生命周期；未提供时行为与从前一致
+- **踩坑**：`UpdateProcThreadAttribute` 对"值是数据指针"的属性**只登记指针、不复制数据**，
+  该数据必须活到 `CreateProcess` 返回为止。最初直接把调用方临时切片的地址传进去，函数一
+  返回指针即悬空，随后 `cmdline()` / `environment_block()` 的分配复用了那块内存，
+  `CreateProcess` 读到垃圾句柄并报 `ERROR_INVALID_HANDLE`（而 `UpdateProcThreadAttribute`
+  本身返回成功，极具迷惑性）。现由 `ProcThreadAttributeList` 自己持有 `job_handles`
+  保证其生命周期。

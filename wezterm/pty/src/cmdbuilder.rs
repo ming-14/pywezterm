@@ -9,6 +9,8 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(unix)]
 use std::path::Component;
 use std::path::Path;
+#[cfg(windows)]
+use winapi::um::winnt::HANDLE;
 
 /// Used to deal with Windows having case-insensitive environment variables.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
@@ -209,6 +211,8 @@ pub struct CommandBuilder {
     controlling_tty: bool,
     #[cfg(windows)]
     raw_cmdline: Option<OsString>,
+    #[cfg(windows)]
+    job_handle: Option<HANDLE>,
 }
 
 impl CommandBuilder {
@@ -224,6 +228,8 @@ impl CommandBuilder {
             controlling_tty: true,
             #[cfg(windows)]
             raw_cmdline: None,
+            #[cfg(windows)]
+            job_handle: None,
         }
     }
 
@@ -238,6 +244,8 @@ impl CommandBuilder {
             controlling_tty: true,
             #[cfg(windows)]
             raw_cmdline: None,
+            #[cfg(windows)]
+            job_handle: None,
         }
     }
 
@@ -267,6 +275,8 @@ impl CommandBuilder {
             controlling_tty: true,
             #[cfg(windows)]
             raw_cmdline: None,
+            #[cfg(windows)]
+            job_handle: None,
         }
     }
 
@@ -280,6 +290,25 @@ impl CommandBuilder {
     #[cfg(windows)]
     pub fn set_raw_cmdline(&mut self, raw: impl Into<OsString>) {
         self.raw_cmdline = Some(raw.into());
+    }
+
+    /// Set the job object to create the child process into (Windows only).
+    ///
+    /// The job is applied via `PROC_THREAD_ATTRIBUTE_JOB_LIST` at
+    /// `CreateProcessW` time, so the child is inside the job from its very
+    /// first instruction.  Assigning the job *after* creation instead leaves
+    /// a window in which the child can already have forked grandchildren that
+    /// never join the job and thus escape both enumeration and termination.
+    ///
+    /// The caller owns the job handle and is responsible for closing it.
+    #[cfg(windows)]
+    pub fn set_job_handle(&mut self, job: HANDLE) {
+        self.job_handle = Some(job);
+    }
+
+    #[cfg(windows)]
+    pub fn get_job_handle(&self) -> Option<HANDLE> {
+        self.job_handle
     }
 
     /// Returns true if this builder was created via `new_default_prog`

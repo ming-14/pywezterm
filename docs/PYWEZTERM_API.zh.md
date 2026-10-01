@@ -202,6 +202,10 @@ pid, handle = p.spawn(["/bin/sh", "-c", "sleep 10"],
 # Windows 且子程序自行解析命令行（如 cmd.exe /c）时保留原始引号语义：
 p.spawn([r"C:\Windows\System32\cmd.exe", "/c", "echo \"a b\""],
         raw_cmdline=r'cmd.exe /c echo "a b"')
+# Windows：创建时即把子进程放进作业对象（PROC_THREAD_ATTRIBUTE_JOB_LIST）。
+# 创建后再赋值有时间窗——子进程在此期间先 fork 出的进程会逃出作业。
+# 作业句柄由调用方创建并持有。
+p.spawn([r"C:\Windows\System32\cmd.exe"], job_handle=job)
 
 p.resize(100, 30);  p.get_size()      # (cols, rows)
 p.write(b"dir\r\n")
@@ -217,7 +221,7 @@ p.close()                             # 幂等；关闭后 read() 恒为 b''，g
 
 ```
 Pty(cols=80, rows=24)
-spawn(argv, cwd=None, env=None, raw_cmdline=None) -> (pid, handle)
+spawn(argv, cwd=None, env=None, raw_cmdline=None, job_handle=None) -> (pid, handle)
 read(n=65536, timeout=None) -> bytes · write(data) · resize(cols, rows) · get_size() -> (cols, rows)
 try_wait() -> int|None · kill() · close() · buffered_bytes() -> int
 child_pid() -> int|None · child_handle() -> int|None · hpcon() -> int|None
