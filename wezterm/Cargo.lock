@@ -2154,12 +2154,24 @@ name = "pywezterm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "log",
+ "pyo3",
+ "pywezterm-core",
+ "wezterm-escape-parser",
+ "wezterm-term",
+]
+
+[[package]]
+name = "pywezterm-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "fontdb",
  "fontdue",
  "image",
+ "libc",
  "log",
  "portable-pty",
- "pyo3",
  "termwiz",
  "tiny-skia",
  "wezterm-char-props",

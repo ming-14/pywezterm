@@ -185,7 +185,7 @@ A pure state machine: `feed()` takes VT bytes, the getters report screen state; 
 | `current_seqno() -> int` | current sequence number (incremented per `feed`), the baseline for dirty-row diffing |
 | `changed_stable_rows(since_seqno) -> list[int]` | stable rows that changed since `since_seqno` (visible area + history) |
 
-The `Cell` tuple (called `CellTuple` below), 10 items:
+The `Cell` tuple has 10 items:
 
 ```python
 (col, char, fg, bg, bold, italic, underline, reverse, strike, width)
@@ -507,20 +507,26 @@ AGENTS.md                  development constraints + log of upstream wezterm cha
 assets/windows/conhost/    sideloaded conpty.dll + OpenConsole.exe
 tests/                     library-level self-tests (pytest)
 wezterm/                   vendored wezterm core crates (upstream sources + this project's bindings)
-  pywezterm/               ← the bindings
+  pywezterm-core/          ← domain layer (no pyo3): pty, emulator model, render, multiplexer
+    src/
+      error.rs          unified error type
+      env.rs            module's own asset location + deployment introspection
+      input.rs          input event vocabulary (platform produces, terminal consumes)
+      term/             grid (Cell/Color/Attrs) · model · view · encode · selection
+      render/           ansi · surface (incremental) · svg · pixmap · font
+      host/             Pane (pty + model + reader + backpressure + close) · registry
+      mux/              layout · compose · chrome
+      platform/         windows/ · posix/ — same interface, per-platform implementation
+  pywezterm/               ← binding shell only
     Cargo.toml  build.rs
     src/
       lib.rs            module registration
-      pty.rs            Pty: portable-pty wrapper, reader thread, backpressure, sideload
-      term.rs           Terminal: wezterm-term wrapper, mode tracking, input encoding
-      term/selection.rs selection
-      mux.rs            Mux: pane layout and incremental whole-screen composition
-      surface_render.rs Surface: wezterm-surface incremental ANSI
-      console_input.rs  ConsoleInput: Win32 console input normalization
-      clipboard.rs      Windows clipboard
-      render/           SVG / bitmap rasterization (fontdb + fontdue + tiny-skia + image)
+      py/               signatures, defaults, type conversion, GIL, error mapping
   term/ pty/ termwiz/ vtparse/ bidi/ wezterm-surface/ ...   upstream crates
 ```
+
+The domain layer does not depend on `pyo3` — writing `use pyo3::` there fails to compile, so the
+layering is enforced by the compiler rather than by convention. See `ARCHITECTURE.md`.
 
 The upstream crates under `wezterm/` are **not** modified by default; when a change really is required (say a genuine wezterm bug), it gets recorded in `AGENTS.md`.
 
@@ -534,7 +540,13 @@ python -m pytest tests/ -v
 
 The tests run against the installed wheel — before running pytest from the repository root, remove the source `pywezterm/` directory, otherwise that shell containing nothing but `import *` shadows the installed package (CI does exactly that).
 
-`tests/` is split by capability: `test_pty` (pseudo-terminal + closed loop), `test_term` / `test_stage1_state` (VT state and modes), `test_stage2_render` / `test_surface_render` (rendering), `test_mux_*` (panes, layout, low-level), `test_selection`, `test_console_input`, `test_edge`.
+`tests/` is split by capability: `test_pty` (pseudo-terminal + closed loop), `test_term` / `test_stage1_state` (VT state and modes), `test_stage2_render` / `test_surface_render` (rendering), `test_mux_*` (panes, layout, low-level), `test_selection`, `test_console_input`, `test_edge`, `test_refactor_invariants` (chunk invariance, failure paths, idempotence).
+
+Rust-side unit tests live in `pywezterm-core` and run without a Python interpreter:
+
+```bash
+cargo test -p pywezterm-core          # 94 tests
+```
 
 The Rust side has its own unit tests: `cargo test --manifest-path wezterm/pywezterm/Cargo.toml`.
 

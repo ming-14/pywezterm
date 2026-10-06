@@ -2,7 +2,7 @@
 name = "pywezterm"
 version = "0.1.0"
 edition = "2018"
-description = "wezterm pty + terminal emulator Python bindings (pyo3/abi3)"
+description = "wezterm terminal engine as a Python extension module (pyo3/abi3)"
 license = "MIT"
 
 [lib]
@@ -11,20 +11,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3.workspace = true
-portable-pty.workspace = true
-termwiz.workspace = true
+pywezterm-core = { path = "../pywezterm-core" }
+# 回调适配要 impl 模型自身的 handler trait
 wezterm-term.workspace = true
-wezterm-surface.workspace = true
-wezterm-char-props.workspace = true
 wezterm-escape-parser.workspace = true
 anyhow.workspace = true
 log.workspace = true
-# 终端渲染 utils：字体发现（fontdb）+ 字形光栅化（fontdue）+ 合成（tiny-skia）
-# + JPG/BMP 编码（image）。均纯 Rust 无 C 库依赖
-fontdb = "0.23"
-fontdue = "0.9"
-tiny-skia.workspace = true
-image.workspace = true
-
-[target."cfg(windows)".dependencies]
-winapi = { workspace = true, features = ["winbase", "winnt", "ioapiset", "handleapi", "processthreadsapi", "consoleapi", "wincon", "synchapi", "winuser"] }

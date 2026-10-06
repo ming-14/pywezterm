@@ -44,13 +44,25 @@ t.key_down("a", SHIFT | CTRL)      # -> b'\x01'
 **Key names**:
 `Up Down Left Right Home End Insert Delete PageUp PageDown Backspace Tab Enter Esc Space`,
 `F1`…`F24`, or any single character (e.g., `"a"`, `"Z"`).
+An invalid key name (multi-character and not a function key, e.g. `"Foo"`, `"F99"`) raises
+`ValueError` — the first character is never silently taken.
 
 **Mouse**: `kind ∈ {"press","release","move"}`,
-`button ∈ {"left","middle","right","wheel_up","wheel_down","none"}`.
+`button ∈ {"left","middle","right","wheel_up","wheel_down","none"}`; invalid values raise `ValueError`.
 
 **Byte destination**: `key_down` / `key_up` / `mouse` directly return encoded bytes for this call;
 `send_paste` and terminal-generated responses (DSR, DECACK, etc.) remain in internal buffer,
 retrieve with `drain_written()`.
+
+**Exceptions**: all derive from `RuntimeError`, so `except RuntimeError` keeps working.
+
+| Exception | Raised when |
+|---|---|
+| `pywezterm.TerminalClosed` | operating on a closed terminal / pane |
+| `pywezterm.PaneNotFound` | the given pane does not exist (including closed) |
+| `pywezterm.RenderError` | rendering or encoding failed |
+| `pywezterm.PlatformUnsupported` | the current platform does not support the capability |
+| `ValueError` | invalid argument (key name, mouse value, render size, …) |
 
 ---
 
@@ -140,6 +152,10 @@ t.render_scrollback(keep_ansi=False)  # str: History area text / text with SGR
 t.render_svg(compression_level=0)     # str: 0=as-is, >=1 compressed
 t.render_image(scale=1.0, fmt="png")  # bytes: png | jpg | jpeg | bmp (8x17 pixels/cell × scale)
 ```
+
+`render_svg` compresses on `&str` boundaries, so CJK text and emoji survive intact.
+`render_image`'s `scale` must be a finite positive number producing a side of at most 16384 pixels,
+otherwise it raises `ValueError` (never panics); an unrecognized `fmt` is treated as `png`.
 
 ### 2.7 Callbacks
 
@@ -241,12 +257,16 @@ seq, frame = s.get_changes_bytes(seq)    # Afterwards only contains changes; no 
 
 s.repaint_bytes()                        # Force full = get_changes_bytes(0)
 s.resize(100, 30)                        # Size change → next frame full
-s.clear()
+s.clear()                                # Rebuilds the surface: model and change stream both reset
 s.dimensions()                           # (cols, rows)
 s.current_seqno()
 ```
 
 Output is TrueColor ANSI; can write directly to real terminal. `set_cell`'s `text` can be multi-character (e.g., `"Hello"`).
+
+`clear()` **rebuilds** the surface (sequence number resets) instead of only pushing a clear-screen
+change into the stream: with the latter the model's cells would still be there and the next full
+repaint would draw the old content right back.
 
 ```
 Surface(cols=80, rows=24)
@@ -260,8 +280,10 @@ resize(cols, rows) · clear() · dimensions() · current_seqno()
 
 ## 5. Mux (multi-pane host main loop)
 
-**Convention**: Layout only supports 2 panes, left-right split; `set_output_callback` must be set **before**
-`add_pane` (already created panes won't change callback); `render()` requires at least one pane.
+**Convention**: Layout supports 1 pane (full screen) and 2 panes (left-right split);
+`render()` needs at least one pane (with none it returns an empty frame instead of crashing).
+Pane ids increase monotonically and are **never reused** — closing one pane never invalidates
+another pane's id; `focused()` returns `None` when there is no pane at all.
 
 ```python
 m = pywezterm.Mux(cols=80, rows=24)
@@ -272,7 +294,7 @@ def on_output():                            # Called when any pane has new outpu
     sys.stdout.buffer.write(frame); sys.stdout.buffer.flush()
     # row/col are focus cursor 0-based full-screen coordinates; CUP in frame is 1-based
 
-m.set_output_callback(on_output)            # or None to clear
+m.set_output_callback(on_output)            # or None to clear; can be set any time
 
 a = m.add_pane(["/bin/sh"])                 # pane_id (0-based); second onwards each half
 b = m.add_pane([r"C:\Windows\System32\cmd.exe"])
@@ -373,9 +395,28 @@ wait_input(ms) -> bool · read_inputs() -> list[tuple] · size() -> (cols, rows)
 ```python
 pywezterm.version()                       # '0.1.0'
 pywezterm.cursor_seq(row, col, visible)   # '\x1b[r+1;c+1H' + '\x1b[?25h' / '\x1b[?25l'
-pywezterm.clipboard_read()  -> str        # Windows; returns '' if no content
-pywezterm.clipboard_write(text)           # Windows; empty string is no-op
+pywezterm.env_info() -> dict              # deployment introspection, see below
+pywezterm.clipboard_read()  -> str        # Windows only; returns '' if no content
+pywezterm.clipboard_write(text)           # Windows only; empty string is no-op
 ```
+
+**`env_info()`** turns previously implicit deployment preconditions into queryable facts:
+
+```python
+pywezterm.env_info()
+# {'module_dir': '.../site-packages/pywezterm',
+#  'conpty_dir': '.../site-packages/pywezterm',   # None = sidecar binaries not found
+#  'conpty_active': True}                          # False = fell back to system conhost
+```
+
+- `module_dir` is derived from the **extension module's own path** (Windows `GetModuleFileNameW`,
+  POSIX `dladdr`) — it depends on neither the process CWD nor `__file__`;
+- `conpty_active == False` means the sidecar did not take effect and the system conhost is in use.
+  Previously this fallback was silent.
+
+**Platform capabilities**: host clipboard and `ConsoleInput` exist on Windows only (the former needs
+an X11/Wayland session, the latter depends on the Win32 console). On other platforms those names are
+**absent**, rather than present-but-always-failing.
 
 ---
 

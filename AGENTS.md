@@ -5,6 +5,14 @@
 
 ## 变更记录
 
+### 新增 workspace 成员 pywezterm-core（wezterm\Cargo.toml + wezterm\Cargo.lock）
+- 绑定层与领域实现拆成两个 crate：`pywezterm-core`（rlib，**不依赖 pyo3**）+ `pywezterm`
+  （cdylib，只有绑定壳）。领域层不依赖 Python 由编译器保证，而不是靠约定
+- 为此必须把 `pywezterm-core` 加进 `wezterm\Cargo.toml` 的 `workspace.members`
+  （位于 workspace 目录树内的包必须显式列名，否则 cargo 拒绝加载），
+  `wezterm\Cargo.lock` 随之更新
+- 除此之外未改动 wezterm 自身任何代码
+
 ### raw 命令行支持（wezterm\pty\src\cmdbuilder.rs + pywezterm\src\pty.rs）
 - 修改原 wezterm（wezterm\pty）以支持 raw 命令行
 - `CommandBuilder` 新增 Windows 专属 `raw_cmdline` 字段与 `set_raw_cmdline()`：

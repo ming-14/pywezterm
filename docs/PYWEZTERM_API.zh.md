@@ -44,13 +44,24 @@ t.key_down("a", SHIFT | CTRL)      # -> b'\x01'
 **键名**：
 `Up Down Left Right Home End Insert Delete PageUp PageDown Backspace Tab Enter Esc Space`、
 `F1`…`F24`、或任意单个字符（如 `"a"`、`"Z"`）。
+非法键名（多字符且不是功能键名，如 `"Foo"`、`"F99"`）抛 `ValueError` —— 不会悄悄取首字符。
 
 **鼠标**：`kind ∈ {"press","release","move"}`，
-`button ∈ {"left","middle","right","wheel_up","wheel_down","none"}`。
+`button ∈ {"left","middle","right","wheel_up","wheel_down","none"}`；非法取值抛 `ValueError`。
 
 **字节去向**：`key_down` / `key_up` / `mouse` 直接返回本次编码字节；
 `send_paste` 与终端**自发**产生的应答（DSR、DECACK 等）留在内部缓冲，
 用 `drain_written()` 统一取出。
+
+**异常**：都继承 `RuntimeError`，因此 `except RuntimeError` 仍然有效。
+
+| 异常 | 触发 |
+|---|---|
+| `pywezterm.TerminalClosed` | 对已关闭的终端/pane 操作 |
+| `pywezterm.PaneNotFound` | 指定的窗格不存在（含已关闭） |
+| `pywezterm.RenderError` | 渲染或编码失败 |
+| `pywezterm.PlatformUnsupported` | 当前平台不支持该能力 |
+| `ValueError` | 参数非法（键名、鼠标取值、渲染尺寸等） |
 
 ---
 
@@ -137,9 +148,13 @@ t.focus_changed(True)       # 上报焦点（DECSET 1004）
 ```python
 t.render_ansi(include_cursor=True)   # str：全屏 ANSI（CUP + SGR + \x1b[K）
 t.render_scrollback(keep_ansi=False)  # str：历史区文本 / 带 SGR 文本
-t.render_svg(compression_level=0)     # str：0=原样，>=1 压缩
+t.render_svg(compression_level=0)     # str：0=原样，>=1 压缩（非 ASCII 文本不会被破坏）
 t.render_image(scale=1.0, fmt="png")  # bytes：png | jpg | jpeg | bmp（8x17 像素/格 × scale）
 ```
+
+`render_svg` 的压缩按 `&str` 边界处理，中文与 emoji 原样保留。
+`render_image` 的 `scale` 必须是有限正数且结果尺寸在 16384 像素以内，否则抛 `ValueError`
+（不会 panic）；无法识别的 `fmt` 按 `png` 处理。
 
 ### 2.7 回调
 
@@ -241,10 +256,13 @@ seq, frame = s.get_changes_bytes(seq)    # 之后只含变化；无变化则 fra
 
 s.repaint_bytes()                        # 强制全量 = get_changes_bytes(0)
 s.resize(100, 30)                        # 尺寸变化 → 下帧全量
-s.clear()
+s.clear()                                # 重建表面：模型与变更流一起清空
 s.dimensions()                           # (cols, rows)
 s.current_seqno()
 ```
+
+`clear()` 会**重建**表面（序号归零），而不是只往变更流里塞一条清屏：只塞清屏的话模型里的格子还在，
+下一次全量重绘会把旧内容原样画回来。
 
 输出为 TrueColor ANSI；直接写到真实终端即可。`set_cell` 的 `text` 可为多字符（如 `"Hello"`）。
 
@@ -260,8 +278,9 @@ resize(cols, rows) · clear() · dimensions() · current_seqno()
 
 ## 5. Mux（多 pane 宿主主循环）
 
-**约定**：布局仅支持 2 个 pane、左右二分；`set_output_callback` 须在 `add_pane`
-**之前**设置（已建好的 pane 不会更换回调）；`render()` 至少要有一个 pane。
+**约定**：布局仅支持 1 个窗格（全屏）与 2 个窗格（左右二分）；`render()` 至少要有一个窗格
+（没有窗格时返回空帧，不会崩）。窗格 id 单调递增、**永不复用** —— 关闭一个窗格不会让其他窗格的
+id 失效；`focused()` 在没有任何窗格时返回 `None`。
 
 ```python
 m = pywezterm.Mux(cols=80, rows=24)
@@ -272,7 +291,7 @@ def on_output():                            # 任一 pane 有新输出时被调�
     sys.stdout.buffer.write(frame); sys.stdout.buffer.flush()
     # row/col 为焦点光标 0-based 整屏坐标；frame 内 CUP 为 1-based
 
-m.set_output_callback(on_output)            # 或 None 清除
+m.set_output_callback(on_output)            # 或 None 清除；随时可设，已建窗格立即生效
 
 a = m.add_pane(["/bin/sh"])                 # pane_id（0 起）；第二个起左右各半
 b = m.add_pane([r"C:\Windows\System32\cmd.exe"])
@@ -373,9 +392,26 @@ wait_input(ms) -> bool · read_inputs() -> list[tuple] · size() -> (cols, rows)
 ```python
 pywezterm.version()                       # '0.1.0'
 pywezterm.cursor_seq(row, col, visible)   # '\x1b[r+1;c+1H' + '\x1b[?25h' / '\x1b[?25l'
-pywezterm.clipboard_read()  -> str        # Windows；无内容返回 ''
-pywezterm.clipboard_write(text)           # Windows；空串为 no-op
+pywezterm.env_info() -> dict              # 部署自省：见下
+pywezterm.clipboard_read()  -> str        # 仅 Windows；无内容返回 ''
+pywezterm.clipboard_write(text)           # 仅 Windows；空串为 no-op
 ```
+
+**`env_info()`** 把原本隐式的部署前提变成可查的事实：
+
+```python
+pywezterm.env_info()
+# {'module_dir': '.../site-packages/pywezterm',
+#  'conpty_dir': '.../site-packages/pywezterm',   # None = 未找到侧载二进制
+#  'conpty_active': True}                          # False = 回落系统 conhost
+```
+
+- `module_dir` 由**扩展模块自身的路径**推导（Windows `GetModuleFileNameW`，POSIX `dladdr`），
+  不依赖进程 CWD，也不依赖 `__file__`；
+- `conpty_active` 为 `False` 时说明侧载没生效、正在用系统 conhost —— 这原本是静默回落。
+
+**平台能力**：宿主剪贴板与 `ConsoleInput` 仅在 Windows 存在（前者需要连接 X11/Wayland 会话，
+后者依赖 Win32 控制台）。其他平台上这两个名字**不存在**，而不是「存在但永远失败」。
 
 ---
 

@@ -183,7 +183,7 @@ p.spawn([comspec, "/c", 'echo "a b"'],
 | `current_seqno() -> int` | 当前序列号（每次 `feed` 递增），脏行差分基线 |
 | `changed_stable_rows(since_seqno) -> list[int]` | 自 `since_seqno` 起变化过的稳定行号（可见区 + 历史） |
 
-`Cell` 元组（下文记作 `CellTuple`），10 项：
+`Cell` 元组共 10 项：
 
 ```python
 (col, char, fg, bg, bold, italic, underline, reverse, strike, width)
@@ -504,21 +504,27 @@ pyproject.toml             maturin 构建配置 + Windows 二进制打包规则
 AGENTS.md                  开发约束 + 对上游 wezterm 的改动记录
 assets/windows/conhost/    侧载用 conpty.dll + OpenConsole.exe
 tests/                     库级自测（pytest）
-wezterm/                   vendored wezterm 核心 crate（上游源码 + 本项目的 pywezterm 绑定）
-  pywezterm/               ← 绑定实现
+wezterm/                   vendored wezterm 核心 crate（上游源码 + 本项目的绑定）
+  pywezterm-core/          ← 领域层（不依赖 pyo3）：pty、终端模型、渲染、复用器
+    src/
+      error.rs          统一错误类型
+      env.rs            模块自身资源位置 + 部署自省
+      input.rs          输入事件词汇表（平台层产出、终端层消费）
+      term/             grid（Cell/Color/Attrs）· model · view · encode · selection
+      render/           ansi · surface（增量）· svg · pixmap · font
+      host/             Pane（pty + 模型 + reader + 背压 + 关闭）· registry
+      mux/              layout · compose · chrome
+      platform/         windows/ · posix/ —— 同名接口，各平台各自实现
+  pywezterm/               ← 只有绑定壳
     Cargo.toml  build.rs
     src/
       lib.rs            模块注册
-      pty.rs            Pty：portable-pty 封装、reader 线程、背压、侧载
-      term.rs           Terminal：wezterm-term 封装、模式跟踪、输入编码
-      term/selection.rs 选区
-      mux.rs            Mux：pane 布局与增量整屏合成
-      surface_render.rs Surface：wezterm-surface 增量 ANSI
-      console_input.rs  ConsoleInput：Win32 控制台输入归一化
-      clipboard.rs      Windows 剪贴板
-      render/           SVG / 位图光栅化（fontdb + fontdue + tiny-skia + image）
+      py/               签名、默认值、类型转换、GIL 管理、错误映射
   term/ pty/ termwiz/ vtparse/ bidi/ wezterm-surface/ ...   上游 crate
 ```
+
+领域层不依赖 `pyo3` —— 在那里写 `use pyo3::` 直接编译不过，分层由编译器保证而不是靠约定。
+详见 `ARCHITECTURE.md`。
 
 `wezterm/` 下的上游 crate 默认**不修改**；确有必要（如修 wezterm 自身 bug）时，改动记录写进 `AGENTS.md`。
 
@@ -532,7 +538,13 @@ python -m pytest tests/ -v
 
 测试直接跑已安装的 wheel —— 在仓库根执行 pytest 前请先移除源码 `pywezterm/` 目录，否则那个只有 `import *` 的空壳会遮蔽已安装的包（CI 就是这么做的）。
 
-`tests/` 按能力划分：`test_pty`（伪终端 + 闭环）、`test_term` / `test_stage1_state`（VT 状态与模式）、`test_stage2_render` / `test_surface_render`（渲染）、`test_mux_*`（pane、布局、低层）、`test_selection`、`test_console_input`、`test_edge`。
+`tests/` 按能力划分：`test_pty`（伪终端 + 闭环）、`test_term` / `test_stage1_state`（VT 状态与模式）、`test_stage2_render` / `test_surface_render`（渲染）、`test_mux_*`（pane、布局、低层）、`test_selection`、`test_console_input`、`test_edge`、`test_refactor_invariants`（分块不变性、失败路径、幂等性）。
+
+Rust 侧单测在 `pywezterm-core` 里，不需要 Python 解释器即可运行：
+
+```bash
+cargo test -p pywezterm-core          # 94 个
+```
 
 Rust 侧另有单元测试：`cargo test --manifest-path wezterm/pywezterm/Cargo.toml`。
 
