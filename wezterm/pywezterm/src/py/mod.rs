@@ -3,8 +3,8 @@
 //! 本层的职责只有四件事：签名与默认值、类型转换、GIL 管理、错误映射。
 //! **任何终端逻辑都不应该出现在这里** —— 出现了就说明它该下沉到 core。
 //!
-//! GIL 规则：凡是会取 core 内部锁的调用，一律先 `py.detach`。否则会形成
-//! 「Python 线程持 GIL 等锁 / reader 线程持锁等 GIL」的互等。
+//! GIL 规则：凡是会取 core 内部锁的调用，一律先 `py.detach`。否则会互等：一个 Python
+//! 线程持 GIL 等 core 的锁，另一个已持该锁、正等 GIL 去执行回调。
 
 mod callbacks;
 #[cfg(windows)]

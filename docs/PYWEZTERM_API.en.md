@@ -31,7 +31,7 @@ and "who receives an event" belong to the caller's UI layer and are out of scope
 (col, ch, fg, bg, bold, italic, underline, reverse, strike, width)
 # Example: (2, 'c', 'p1', 'default', False, False, False, False, False, 1)
 ```
-- `ch == ""` indicates continuation cell for wide characters (wide characters occupy 2 cells, only the first cell contains the character)
+- `col` is the real column index: the padding cell covered by a wide character is **not** yielded, so column numbers jump (`0, 2, 4, …`). Renderers must advance by `width`, not by 1
 - `width` is display width: CJK/emoji = 2, others = 1
 
 **Color strings**: `"default"` | `"p0"`…`"p15"` (ANSI palette) | `"#rrggbb"`
@@ -277,12 +277,21 @@ set_cell(x, y, text, fg='default', bg='default', bold=False, italic=False,
 get_changes_bytes(since_seqno) -> (seq, bytes) · repaint_bytes() -> (seq, bytes)
 resize(cols, rows) · clear() · dimensions() · current_seqno()
 ```
+
+---
+
 ## 5. ConsoleInput (Windows)
 
 Construction takes over console input/output mode and code page, restored on `restore()` (or object destruction).
 Event reading is non-blocking: first `wait_input(ms)` to wait, then `read_inputs()` to get all.
 
 Events come back normalized — the caller sees pywezterm key names and screen coordinates, never a Win32 structure:
+
+```python
+("key", key, mods, down)                      # key names as in Terminal.key_down; Ctrl+letter normalized to the letter + CTRL bit; bare modifier keys ignored
+("mouse", x, y, kind, button, mods, clicks)   # release events get the last_pressed button filled in; clicks counts consecutive clicks (1 / 2 / 3)
+("resize",)
+```
 
 ```python
 ci = pywezterm.ConsoleInput()
@@ -296,7 +305,7 @@ try:
                 if down:
                     t.key_down(key, mods)         # encode, then write to the pty yourself
             elif ev[0] == "mouse":
-                _, x, y, kind, button, mods = ev  # ('mouse', 12, 4, 'press', 'left', 0)
+                _, x, y, kind, button, mods, clicks = ev  # ('mouse', 12, 4, 'press', 'left', 0, 1)
                 t.mouse(x, y, kind, button, mods)
             elif ev[0] == "resize":
                 cols, rows = ci.size()            # Get size immediately after ('resize',)

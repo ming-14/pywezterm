@@ -31,7 +31,7 @@ UI 层，不在本库范围内。
 (col, ch, fg, bg, bold, italic, underline, reverse, strike, width)
 # 例: (2, 'c', 'p1', 'default', False, False, False, False, False, 1)
 ```
-- `ch == ""` 表示宽字符的续格（宽字符占 2 格，只有首格带字符）
+- `col` 取单元格的真实列索引：宽字符覆盖的那一格**不会**出现，因此列号会跳位（`0, 2, 4, …`）。渲染时按 `width` 推进，而不是按 1
 - `width` 为显示宽度：CJK/emoji = 2，其余 = 1
 
 **颜色字符串**：`"default"` | `"p0"`…`"p15"`（ANSI 调色板） | `"#rrggbb"`
@@ -275,12 +275,21 @@ set_cell(x, y, text, fg='default', bg='default', bold=False, italic=False,
 get_changes_bytes(since_seqno) -> (seq, bytes) · repaint_bytes() -> (seq, bytes)
 resize(cols, rows) · clear() · dimensions() · current_seqno()
 ```
+
+---
+
 ## 5. ConsoleInput（Windows）
 
 构造即接管控制台输入/输出模式与代码页，`restore()`（或对象销毁）时还原。
 事件读取非阻塞：先 `wait_input(ms)` 等待，再 `read_inputs()` 取全部。
 
 事件已归一化，调用方拿到的是 pywezterm 键名与整屏坐标，不需要接触任何 Win32 结构：
+
+```python
+("key", key, mods, down)                      # key 名同 Terminal.key_down；Ctrl+字母归一为字母 + CTRL 位；修饰键自身忽略
+("mouse", x, y, kind, button, mods, clicks)   # 抬键自动补 last_pressed 按钮；clicks 为连击次数（1 / 2 / 3）
+("resize",)
+```
 
 ```python
 ci = pywezterm.ConsoleInput()
@@ -294,7 +303,7 @@ try:
                 if down:
                     t.key_down(key, mods)         # 编码后自行写 pty
             elif ev[0] == "mouse":
-                _, x, y, kind, button, mods = ev  # ('mouse', 12, 4, 'press', 'left', 0)
+                _, x, y, kind, button, mods, clicks = ev  # ('mouse', 12, 4, 'press', 'left', 0, 1)
                 t.mouse(x, y, kind, button, mods)
             elif ev[0] == "resize":
                 cols, rows = ci.size()            # ('resize',) 后立即取尺寸

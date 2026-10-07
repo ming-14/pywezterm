@@ -97,7 +97,7 @@ maturin build --release --out target/wheels
 | `Surface` | all | build a frame cell by cell → emit only the changed bytes as incremental ANSI |
 | `ConsoleInput` | Windows | normalized console input capture (keys / mouse / resize), saves and restores console modes |
 | `clipboard_read` / `clipboard_write` | Windows | clipboard text access (the landing point for OSC 52) |
-| `version()` / `cursor_seq()` | all | version string / cursor positioning sequence |
+| `version()` / `cursor_seq()` / `env_info()` | all | version string / cursor positioning sequence / deployment introspection |
 
 Terminal features handled by wezterm-term: the full CSI/SGR/OSC set, alternate screen and scrollback, wide characters and bidi text, `OSC 0/2` title, `OSC 7` cwd, `OSC 9` progress, `OSC 52` clipboard, `OSC 133` semantic zones, `OSC 8` hyperlink downloads, Kitty keyboard / CSI-u encoding, mouse tracking (1000/1002/1003/1006/1016), bracketed paste, synchronized output (2026), Sixel/iTerm inline images.
 
@@ -118,6 +118,11 @@ pywezterm.cursor_seq(row: int, col: int, visible: bool) -> str
 Cursor positioning sequence. Input is **0-based**, output is a 1-based CUP plus `\x1b[?25h` / `\x1b[?25l`.
 
 ```python
+pywezterm.env_info() -> dict
+```
+Deployment introspection: `module_dir` (the extension module's own directory), `conpty_dir` (`None` when the sideload binaries are absent), `conpty_active` (`False` means the system conhost is in use).
+
+```python
 pywezterm.clipboard_read() -> str            # Windows; "" when there is no text
 pywezterm.clipboard_write(text: str) -> None # Windows
 ```
@@ -129,11 +134,11 @@ Wraps `portable-pty`. Internally an "owner reader thread + buffered queue" model
 | Method | Notes |
 |---|---|
 | `Pty(cols=80, rows=24)` | create the pseudo-console; does **not** spawn a child |
-| `spawn(argv, cwd=None, env=None, raw_cmdline=None) -> (pid, handle)` | start a child. `env` is `{k: v}`; `handle` is the process handle (always 0 on POSIX) |
+| `spawn(argv, cwd=None, env=None, raw_cmdline=None, job_handle=None) -> (pid, handle)` | start a child. `env` is `{k: v}`; `handle` is the process handle (always 0 on POSIX) |
 | `read(n=65536, timeout=None) -> bytes` | read output. `timeout=None` blocks until data or EOF; otherwise waits at most `timeout` seconds. Returns `b""` on EOF / timeout / after close. Polling **releases the GIL** |
 | `write(data: bytes) -> None` | write input. A blocked write **releases the GIL** |
 | `resize(cols, rows) -> None` | resize |
-| `get_size() -> (cols, rows)` | current size |
+| `get_size() -> (cols, rows)` | current size; `(0, 0)` after close |
 | `buffered_bytes() -> int` | bytes sitting in the read buffer waiting for `read` |
 | `child_pid() -> int \| None` | child PID |
 | `try_wait() -> int \| None` | non-blocking exit code; `None` = still running or never spawned |
@@ -151,6 +156,15 @@ comspec = os.environ["COMSPEC"]
 p = pywezterm.Pty()
 p.spawn([comspec, "/c", 'echo "a b"'],
         raw_cmdline=f"{comspec} /c echo \"a b\"")   # let cmd.exe interpret the quotes
+```
+
+`job_handle` (Windows only): a job object handle. When given, the child enters that job at `CreateProcessW` time, so there is no window in which a grandchild forked before a later `AssignProcessToJobObject` escapes the job. The caller creates, owns and closes the handle:
+
+```python
+import pywezterm
+
+p = pywezterm.Pty()
+p.spawn(argv, job_handle=job)   # job: an existing job object handle
 ```
 
 ### `Terminal` — terminal emulator
@@ -236,17 +250,17 @@ The `Cell` tuple has 10 items:
 |---|---|
 | `set_clipboard_callback(cb)` | `(selection: str, content: str \| None) -> None` —— OSC 52 |
 | `set_download_callback(cb)` | `(name: str \| None, data: bytes) -> None` —— OSC 8 download |
-| `set_device_control_callback(cb)` | DCS sequences |
-| `set_notification_callback(cb)` | Alert: bell / title / progress etc. |
+| `set_device_control_callback(cb)` | `(control: str) -> None` —— DCS sequences |
+| `set_notification_callback(cb)` | `(alert: str) -> None` —— Alert: bell / title / progress etc. |
 
-> Callbacks should **only** perform their side effect (write the clipboard, set an event). Never query terminal state from inside one — the callback can contend with the reader thread for the same lock and deadlock.
+> Callbacks should **only** perform their side effect (write the clipboard, set an event). They run while the model lock is held, so calling back into any `Terminal` method from inside one deadlocks. Exceptions are caught and printed.
 
 **Graphics export**
 
 | Method | Notes |
 |---|---|
 | `render_svg(compression_level: int) -> str` | SVG of the visible screen. `0` = as-is; `>=1` compresses (drop empty text nodes, collapse whitespace between tags) |
-| `render_image(scale: float, fmt: str) -> bytes` | image bytes. `fmt` ∈ `png`/`jpg`/`jpeg`/`bmp`; `scale` multiplies cell pixels (`1.0` standard, `2.0` hi-dpi) |
+| `render_image(scale: float = 1.0, fmt: str = "png") -> bytes` | image bytes. `fmt` ∈ `png`/`jpg`/`jpeg`/`bmp` (unrecognized ones are encoded as `png`); `scale` multiplies cell pixels (`1.0` standard, `2.0` hi-dpi). Invalid `scale`, or a result larger than 16384 pixels per side, raises `ValueError` |
 
 Rasterization is pure Rust (fontdb for discovery, fontdue for glyphs, tiny-skia for compositing, image for encoding) — no GUI library involved. Same viewpoint as `snapshot()`.
 
@@ -271,7 +285,7 @@ seqno, data = s.get_changes_bytes(seqno)                  # b"" = nothing change
 
 ### `ConsoleInput` — Windows console input
 
-Moves console input capture for a host that owns a real console into the bindings, replacing hand-rolled ctypes Win32. Construction sets the console modes (VT processing on, wrap auto-CR off for output; raw key events for input) and **saves the original modes**; `restore()` or dropping the object puts them back. Constructing when stdio is redirected (not a console) fails.
+Moves console input capture for a host that owns a real console into the bindings, replacing hand-rolled ctypes Win32. Construction sets the console modes (VT processing on, wrap auto-CR off for output; raw key events for input), switches the output code page to UTF-8, and **saves the original modes**; `restore()` or dropping the object puts them back. Constructing when stdio is redirected (not a console) fails.
 
 ```python
 ci = pywezterm.ConsoleInput()
@@ -287,7 +301,7 @@ finally:
 
 ```python
 ("key", key, mods, down)                      # key names as in Terminal.key_down; Ctrl+letter normalized to the letter + CTRL bit; bare modifier keys ignored
-("mouse", x, y, kind, button, mods)           # release events get the last_pressed button filled in
+("mouse", x, y, kind, button, mods, clicks)   # release events get the last_pressed button filled in; clicks counts consecutive clicks (1/2/3)
 ("resize",)
 ```
 
@@ -317,7 +331,7 @@ There is no helper that closes the loop for you: using `Pty` + `Terminal` means 
 
 ### GIL
 
-`read()` and `write()` both poll/block with the **GIL released**. When the PTY is full (the child isn't reading input, and it's waiting for your answer to a query), a blocked write holding the lock freezes the entire Python process — the asyncio event loop included. Running the write on another thread does not help; that is precisely what releasing the GIL buys you.
+`read()` and `write()` both poll/block with the **GIL released**. That is what keeps a stalled call from freezing the rest of the process: when the PTY is full (the child isn't reading input because it is waiting for your answer to a query), the write blocks — holding the GIL there would stall every Python thread, the asyncio event loop included.
 
 ### Mode tracking and `mode_restore_seq()`
 
@@ -331,7 +345,7 @@ Three things worth knowing:
 
 ### ConPTY sideloading on Windows x64
 
-The Windows x64 wheel carries `conpty.dll` + `OpenConsole.exe` (the conhost shipped by wezterm). On the first `Pty` creation the package directory is registered as the sideload directory, so portable-pty prefers wezterm's OpenConsole host over the system conhost — matching wezterm's behavior and avoiding several system-conhost quirks. Windows ARM64 / i386 and all other platforms ship no such binaries (they cannot load across architectures) and use the in-kernel ConPTY.
+The Windows x64 wheel carries `conpty.dll` + `OpenConsole.exe` (the conhost shipped by wezterm). At module import the package directory is registered as the sideload directory, so portable-pty prefers wezterm's OpenConsole host over the system conhost — matching wezterm's behavior and avoiding several system-conhost quirks. Windows ARM64 / i386 and all other platforms ship no such binaries (they cannot load across architectures) and use the in-kernel ConPTY.
 
 ---
 
@@ -457,6 +471,7 @@ BUILD.py                   cross-platform build script
 pyproject.toml             maturin config + Windows binary packaging rules
 AGENTS.md                  development constraints + log of upstream wezterm changes
 assets/windows/conhost/    sideloaded conpty.dll + OpenConsole.exe
+docs/                      API reference (PYWEZTERM_API.en.md / .zh.md)
 tests/                     library-level self-tests (pytest)
 wezterm/                   vendored wezterm core crates (upstream sources + this project's bindings)
   pywezterm-core/          ← domain layer (no pyo3): pty, emulator model, rendering
@@ -477,7 +492,7 @@ wezterm/                   vendored wezterm core crates (upstream sources + this
 ```
 
 The domain layer does not depend on `pyo3` — writing `use pyo3::` there fails to compile, so the
-layering is enforced by the compiler rather than by convention. See `ARCHITECTURE.md`.
+layering is enforced by the compiler rather than by convention.
 
 The upstream crates under `wezterm/` are **not** modified by default; when a change really is required (say a genuine wezterm bug), it gets recorded in `AGENTS.md`.
 
@@ -496,10 +511,8 @@ In CI the tests run against the installed wheel, so the source `pywezterm/` dire
 Rust-side unit tests live in `pywezterm-core` and run without a Python interpreter:
 
 ```bash
-cargo test -p pywezterm-core          # 94 tests
+cargo test -p pywezterm-core          # 81 tests
 ```
-
-The Rust side has its own unit tests: `cargo test --manifest-path wezterm/pywezterm/Cargo.toml`.
 
 ## License
 

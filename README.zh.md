@@ -95,7 +95,7 @@ maturin build --release --out target/wheels
 | `Surface` | 全平台 | 手工构造帧 → 只输出变化的增量 ANSI 字节 |
 | `ConsoleInput` | Windows | 归一化的控制台输入采集（按键 / 鼠标 / resize），自动保存恢复控制台模式 |
 | `clipboard_read` / `clipboard_write` | Windows | 剪贴板文本读写（供 OSC 52 落地） |
-| `version()` / `cursor_seq()` | 全平台 | 版本号 / 光标定位序列 |
+| `version()` / `cursor_seq()` / `env_info()` | 全平台 | 版本号 / 光标定位序列 / 部署自省 |
 
 `Terminal` 支持的终端特性（由 wezterm-term 提供）：CSI/SGR/OSC 全集、备用屏与 scrollback、宽字符与双向文本、`OSC 0/2` 标题、`OSC 7` 当前目录、`OSC 9` 进度、`OSC 52` 剪贴板、`OSC 133` 语义区、`OSC 8` 超链接下载、Kitty keyboard / CSI-u 编码、鼠标追踪（1000/1002/1003/1006/1016）、bracketed paste、同步输出（2026）、Sixel/iTerm 图像内嵌。
 
@@ -116,6 +116,11 @@ pywezterm.cursor_seq(row: int, col: int, visible: bool) -> str
 光标定位序列。入参 **0-based**，输出 1-based CUP + `\x1b[?25h` / `\x1b[?25l`。
 
 ```python
+pywezterm.env_info() -> dict
+```
+部署自省：`module_dir`（扩展模块自身所在目录）、`conpty_dir`（侧载二进制缺失时为 `None`）、`conpty_active`（`False` 表示正在用系统 conhost）。
+
+```python
 pywezterm.clipboard_read() -> str            # Windows；无文本返回 ""
 pywezterm.clipboard_write(text: str) -> None # Windows
 ```
@@ -127,11 +132,11 @@ pywezterm.clipboard_write(text: str) -> None # Windows
 | 方法 | 说明 |
 |---|---|
 | `Pty(cols=80, rows=24)` | 创建伪终端，**不** spawn 子进程 |
-| `spawn(argv, cwd=None, env=None, raw_cmdline=None) -> (pid, handle)` | 启动子进程。`env` 为 `{k: v}`；`handle` 为进程句柄（POSIX 恒为 0） |
+| `spawn(argv, cwd=None, env=None, raw_cmdline=None, job_handle=None) -> (pid, handle)` | 启动子进程。`env` 为 `{k: v}`；`handle` 为进程句柄（POSIX 恒为 0） |
 | `read(n=65536, timeout=None) -> bytes` | 读取输出。`timeout=None` 阻塞到有数据或 EOF；否则最多等 `timeout` 秒。EOF / 超时 / 已关闭返回 `b""`。等待期间**释放 GIL** |
 | `write(data: bytes) -> None` | 写入输入。阻塞写期间**释放 GIL** |
 | `resize(cols, rows) -> None` | 调整尺寸 |
-| `get_size() -> (cols, rows)` | 当前尺寸 |
+| `get_size() -> (cols, rows)` | 当前尺寸，关闭后为 `(0, 0)` |
 | `buffered_bytes() -> int` | 读缓冲中待 `read` 取走的字节数 |
 | `child_pid() -> int \| None` | 子进程 PID |
 | `try_wait() -> int \| None` | 非阻塞退出码；`None` = 仍在运行或未 spawn |
@@ -149,6 +154,15 @@ comspec = os.environ["COMSPEC"]
 p = pywezterm.Pty()
 p.spawn([comspec, "/c", 'echo "a b"'],
         raw_cmdline=f"{comspec} /c echo \"a b\"")   # 引号语义交给 cmd.exe
+```
+
+`job_handle`（仅 Windows）：作业对象句柄。提供时子进程在 `CreateProcessW` 时就进入该作业，不存在「创建后再赋值」的时间窗——那段时间里子进程先 fork 出的进程会逃出作业。句柄由调用方创建、持有并关闭：
+
+```python
+import pywezterm
+
+p = pywezterm.Pty()
+p.spawn(argv, job_handle=job)   # job：一个已存在的作业对象句柄
 ```
 
 ### `Terminal` — 终端模拟器
@@ -234,17 +248,17 @@ p.spawn([comspec, "/c", 'echo "a b"'],
 |---|---|
 | `set_clipboard_callback(cb)` | `(selection: str, content: str \| None) -> None` —— OSC 52 |
 | `set_download_callback(cb)` | `(name: str \| None, data: bytes) -> None` —— OSC 8 下载 |
-| `set_device_control_callback(cb)` | DCS 序列 |
-| `set_notification_callback(cb)` | Alert：Bell / 标题 / 进度等 |
+| `set_device_control_callback(cb)` | `(control: str) -> None` —— DCS 序列 |
+| `set_notification_callback(cb)` | `(alert: str) -> None` —— Alert：Bell / 标题 / 进度等 |
 
-> 回调里**只**做落地动作（写剪贴板、置事件），不要在回调内反查终端状态——回调可能与 reader 线程争同一把锁而死锁。
+> 回调里**只**做落地动作（写剪贴板、置事件）：回调发生在模型锁持有期间，在里面再调任何 `Terminal` 方法会死锁。回调抛出的异常被捕获并打印。
 
 **图形导出**
 
 | 方法 | 说明 |
 |---|---|
 | `render_svg(compression_level: int) -> str` | 可见屏幕 SVG。`0` = 原样；`>=1` 压缩（去空 text、折叠标签间空白） |
-| `render_image(scale: float, fmt: str) -> bytes` | 位图字节。`fmt` ∈ `png`/`jpg`/`jpeg`/`bmp`；`scale` 为格子像素倍数（`1.0` 标准、`2.0` 高清） |
+| `render_image(scale: float = 1.0, fmt: str = "png") -> bytes` | 位图字节。`fmt` ∈ `png`/`jpg`/`jpeg`/`bmp`（无法识别的按 `png` 编码）；`scale` 为格子像素倍数（`1.0` 标准、`2.0` 高清）。`scale` 非法或结果超过 16384 像素/边时抛 `ValueError` |
 
 纯 Rust 光栅化（fontdb 字体发现 + fontdue 字形 + tiny-skia 合成 + image 编码），不依赖任何 GUI 库。与 `snapshot()` 同视角。
 
@@ -269,7 +283,7 @@ seqno, data = s.get_changes_bytes(seqno)                 # 空 b"" = 无变化
 
 ### `ConsoleInput` — Windows 控制台输入
 
-把宿主持有控制台时的输入采集搬到绑定层，替代手写 ctypes Win32。构造即设置控制台模式（输出侧 VT + 禁自动换行回车，输入侧原始按键）并**保存原模式**；`restore()` 或对象析构时恢复。stdio 被重定向（非控制台）时构造失败。
+把宿主持有控制台时的输入采集搬到绑定层，替代手写 ctypes Win32。构造即设置控制台模式（输出侧 VT + 禁自动换行回车，输入侧原始按键）、把输出代码页切到 UTF-8，并**保存原模式**；`restore()` 或对象析构时恢复。stdio 被重定向（非控制台）时构造失败。
 
 ```python
 ci = pywezterm.ConsoleInput()
@@ -285,7 +299,7 @@ finally:
 
 ```python
 ("key", key, mods, down)                      # key 名同 Terminal.key_down；Ctrl+字母归一为字母 + CTRL 位；修饰键自身忽略
-("mouse", x, y, kind, button, mods)           # 抬键自动补 last_pressed 按钮
+("mouse", x, y, kind, button, mods, clicks)   # 抬键自动补 last_pressed 按钮；clicks 为连击次数（1/2/3）
 ("resize",)
 ```
 
@@ -315,13 +329,13 @@ if resp: p.write(resp)        # 3. 回写 pty —— 否则子进程等应答卡
 
 ### GIL
 
-`read()` 与 `write()` 都在**释放 GIL** 的前提下轮询/阻塞。PTY 写满时（子进程不读输入、且它在等你的应答），持锁的阻塞写会卡死整个 Python 进程，包括 asyncio 事件循环。
+`read()` 与 `write()` 都在**释放 GIL** 的前提下轮询/阻塞。这正是卡住的调用不会拖垮整个进程的原因：PTY 写满时（子进程不读输入、因为它在等你的应答）写会阻塞，此时若持着 GIL，所有 Python 线程——包括 asyncio 事件循环——都会一起停住。
 
 ### 模式跟踪与 `mode_restore_seq()`
 
 `feed()` 扫描到达的模式序列（`CSI ? Pm h/l` 与 `CSI Pm h/l`），记录 DECSET 1 / 6 / 7 / 12 / 25 / 45 / 47 / 66 / 1000 / 1002 / 1003 / 1004 / 1006 / 1016 / 1047 / 1049 / 2004 与 SM 4 / 20。`mode_restore_seq()` 输出恢复序列，用于客户端（如 xterm.js）重连或订阅时把屏幕状态补齐。
 
-两点值得知道：
+三点值得知道：
 
 - **每个模式字段是 `Option`**：`None` = 应用从未设置过它，恢复时**不发**这条序列，让客户端保留自己的默认值。记成 `bool` 会用「我们以为的默认值」覆盖客户端设置（例如光标闪烁）。
 - 只能看到**到达我们的**序列。Windows/ConPTY 会吞掉一部分（鼠标模式、DECCKM、光标可见、原点模式、备用屏），那些无从得知也不可能补回——环境限制，不是实现缺陷。
@@ -329,7 +343,7 @@ if resp: p.write(resp)        # 3. 回写 pty —— 否则子进程等应答卡
 
 ### ConPTY 侧载 Windows x64
 
-Windows x64 的 wheel 里带 `conpty.dll` + `OpenConsole.exe`（来自 wezterm 自带的 conhost）。首次创建 `Pty` 时把包目录设为侧载目录，portable-pty 便优先使用 wezterm 的 OpenConsole 宿主，而非系统 conhost —— 行为与 wezterm 一致，也规避若干系统 conhost 的差异。Windows ARM64 / i386 与其余平台不带这些二进制（跨架构无法加载），走系统内核 ConPTY。
+Windows x64 的 wheel 里带 `conpty.dll` + `OpenConsole.exe`（来自 wezterm 自带的 conhost）。模块导入时即把包目录设为侧载目录，portable-pty 便优先使用 wezterm 的 OpenConsole 宿主，而非系统 conhost —— 行为与 wezterm 一致，也规避若干系统 conhost 的差异。Windows ARM64 / i386 与其余平台不带这些二进制（跨架构无法加载），走系统内核 ConPTY。
 
 ---
 
@@ -454,6 +468,7 @@ BUILD.py                   跨平台构建脚本
 pyproject.toml             maturin 构建配置 + Windows 二进制打包规则
 AGENTS.md                  开发约束 + 对上游 wezterm 的改动记录
 assets/windows/conhost/    侧载用 conpty.dll + OpenConsole.exe
+docs/                      API 参考（PYWEZTERM_API.en.md / .zh.md）
 tests/                     库级自测（pytest）
 wezterm/                   vendored wezterm 核心 crate（上游源码 + 本项目的绑定）
   pywezterm-core/          ← 领域层（不依赖 pyo3）：pty、终端模型、渲染
@@ -474,7 +489,6 @@ wezterm/                   vendored wezterm 核心 crate（上游源码 + 本项
 ```
 
 领域层不依赖 `pyo3` —— 在那里写 `use pyo3::` 直接编译不过，分层由编译器保证而不是靠约定。
-详见 `ARCHITECTURE.md`。
 
 `wezterm/` 下的上游 crate 默认**不修改**；确有必要（如修 wezterm 自身 bug）时，改动记录写进 `AGENTS.md`。
 
@@ -493,10 +507,8 @@ CI 里测试跑已安装的 wheel，因此那边会移除源码 `pywezterm/` 目
 Rust 侧单测在 `pywezterm-core` 里，不需要 Python 解释器即可运行：
 
 ```bash
-cargo test -p pywezterm-core          # 94 个
+cargo test -p pywezterm-core          # 81 个
 ```
-
-Rust 侧另有单元测试：`cargo test --manifest-path wezterm/pywezterm/Cargo.toml`。
 
 ## 许可
 

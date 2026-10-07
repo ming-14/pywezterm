@@ -52,7 +52,8 @@ impl Pty {
         ))
     }
 
-    /// 写端句柄（reader 线程回写应答、调用方写输入，共用同一份）。
+    /// 写端句柄。reader 线程只读不写，写端由调用方使用；`Arc<Mutex<..>>` 是因为 `Pane`
+    /// 与 `Pty` 各持一份引用，且关闭时要能同时作废。
     pub fn writer(&self) -> Writer {
         self.writer.clone()
     }
