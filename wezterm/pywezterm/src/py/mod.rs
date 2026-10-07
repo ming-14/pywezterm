@@ -7,7 +7,9 @@
 //! 「Python 线程持 GIL 等锁 / reader 线程持锁等 GIL」的互等。
 
 mod callbacks;
+#[cfg(windows)]
 mod clipboard;
+#[cfg(windows)]
 mod console_input;
 mod convert;
 mod error;

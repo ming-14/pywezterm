@@ -28,6 +28,13 @@ COMSPEC = os.environ.get("COMSPEC", "cmd.exe")
 # --------------------------------------------------------------------------
 
 
+def _shell_argv(cmd):
+    """跨平台 shell：POSIX `/bin/sh -c`，Windows `cmd /c`。"""
+    if os.name == "posix":
+        return ["/bin/sh", "-c", cmd]
+    return [COMSPEC, "/c", cmd]
+
+
 def _run(p, t, timeout=8.0):
     """读 pty → feed 模型 → 回写模型应答，直到 EOF，返回累积原始输出。"""
     out = b""
@@ -104,7 +111,7 @@ def test_env_info_keys():
 def test_pty_spawn_returns_pid_handle_and_handles():
     p = pywezterm.Pty(80, 24)
     try:
-        pid, handle = p.spawn([COMSPEC, "/c", "exit"])
+        pid, handle = p.spawn(_shell_argv("exit"))
         assert pid > 0, pid
         if IS_WIN:
             assert handle != 0, handle
@@ -359,7 +366,7 @@ def test_write_after_close_is_graceful_noop():
     read() 恒为 b""。
     """
     p = pywezterm.Pty(80, 24)
-    p.spawn([COMSPEC, "/c", "exit"])
+    p.spawn(_shell_argv("exit"))
     p.close()
     p.write(b"should be noop")  # 不应抛异常
     assert p.read(16, timeout=0.2) == b""

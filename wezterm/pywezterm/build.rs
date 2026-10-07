@@ -13,6 +13,7 @@
 
 /// 侧载二进制文件名。必须与 `pyproject.toml` 的 include 列表、
 /// `pywezterm-core/src/platform/windows/conpty.rs` 的 `SIDECAR` 一致。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 const SIDECAR: &[&str] = &["conpty.dll", "OpenConsole.exe"];
 
 fn main() {
