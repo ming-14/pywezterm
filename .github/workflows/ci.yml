@@ -180,14 +180,44 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
           REPO="${{ github.repository }}"
-          # 已存在则补传资产（重新触发），否则新建
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.whl dist/SHA256SUMS.txt --repo "$REPO" --clobber
-          else
+
+          # 按 tag_name 列 release：不用 /releases/tags/<tag>（被删过 tag 的 release
+          # 是 untagged 的，那个端点只会 404），也不用 gh release view（它会命中这
+          # 类孤儿 release，导致下面一路走到 upload 分支而永远发不出去）
+          mapfile -t REL < <(gh api "repos/$REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft) \(.html_url)\"")
+
+          KEEP=""
+          for r in "${REL[@]:-}"; do
+            [ -z "$r" ] && continue
+            id=${r%% *}; rest=${r#* }
+            draft=${rest%% *}; url=${rest#* }
+            case "$url" in
+              */untagged-*)
+                # tag 被删过会让 release 变成 untagged draft：它绑在旧 commit 上，
+                # 无法重新关联 tag，留着会让后续 CI 一直往草稿里灌资产
+                echo "删除孤儿 release id=$id（$url）"
+                gh api -X DELETE "repos/$REPO/releases/$id"
+                ;;
+              *) KEEP="$id $draft" ;;
+            esac
+          done
+
+          if [ -z "$KEEP" ]; then
+            echo "新建 release $TAG"
             gh release create "$TAG" dist/*.whl dist/SHA256SUMS.txt \
               --repo "$REPO" \
               --title "$TAG" \
               --notes "pywezterm $TAG"
+          else
+            id=${KEEP%% *}; draft=${KEEP#* }
+            echo "复用既有 release id=$id，覆盖上传资产"
+            gh release upload "$TAG" dist/*.whl dist/SHA256SUMS.txt --repo "$REPO" --clobber
+            # tag 已经推上来了就是要发布；手建的草稿在这里一并发出去
+            if [ "$draft" = "true" ]; then
+              gh release edit "$TAG" --repo "$REPO" --draft=false
+            fi
           fi
