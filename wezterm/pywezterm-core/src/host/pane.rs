@@ -1,17 +1,10 @@
 //! 终端宿主单元。
 //!
 //! [`Pane`] = pty + 终端模型 + 视口 + 选区 + reader 线程 + 读缓冲 + 关闭协议。
-//! 这是全库**唯一**的宿主实现：Python 的 `Pty` 与 `Terminal`、以及复用器的每个窗格
-//! 都建在它上面，差别只在是否带 pty、以及由谁驱动模型。
+//! Python 的 `Pty` 与 `Terminal` 都建在它上面，差别只在是否带 pty。
 //!
-//! 两种驱动方式（[`Driver`]）：
-//!
-//! - [`Driver::Caller`]：reader 只把字节放进读缓冲（带高/低水位背压），调用方用
-//!   `read()` 取走后自行处理。`Pty` 用法 —— 谁喂模型、谁回应答由调用方决定。
-//! - [`Driver::Auto`]：reader 直接把字节喂进模型，并把模型产生的应答回写 pty。
-//!   复用器窗格用法 —— 窗格是自洽的，宿主不介入。
-//!
-//! 两种模式共用同一份 pty 生命周期、reader 循环与关闭协议。
+//! reader 只做一件事：把子进程输出放进读缓冲（带高/低水位背压），调用方用 `read()`
+//! 取走后自行决定喂模型、回应答。宿主不替调用方解释字节流。
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -41,25 +34,6 @@ const READ_BUFFER_LOW: usize = 1 << 18;
 const SPACE_WAIT: Duration = Duration::from_millis(50);
 /// 单次 read 的块大小。
 const CHUNK: usize = 8192;
-/// 录制缓冲上限。超过后停止累积 —— 丢的是录制，不是终端内容。
-const RECORD_LIMIT: usize = 16 << 20;
-/// 默认 scrollback 行数。
-pub const DEFAULT_SCROLLBACK: usize = 10_000;
-
-/// 有新输出时的通知。实现只应做轻量操作（如置位事件），**不得反查 pane 状态** ——
-/// reader 线程正在持锁推进，反查会互等。
-pub trait OutputNotifier: Send + Sync {
-    fn notify(&self);
-}
-
-/// 谁驱动模型。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Driver {
-    /// 调用方驱动：字节进读缓冲，应答由调用方回写。
-    Caller,
-    /// 自驱动：字节直接喂模型，应答由 reader 回写。
-    Auto,
-}
 
 /// 终端宿主单元（多线程安全）。
 pub struct Pane {
@@ -81,17 +55,14 @@ struct Inner {
     eof: AtomicBool,
     closed: AtomicBool,
     reader_cancel: platform::reader_cancel::Shared,
-    /// ConPTY 在 resize 后会重画整屏；这些字节若喂进模型会与我们的 rewrap 结果混合。
-    /// 置位后由 reader 跳过紧随其后的那次重画（见 [`is_resize_repaint`]）。
-    repaint_pending: AtomicBool,
-    /// 子进程原始输出（录制用），仅 [`Driver::Auto`] 累积
-    record: Mutex<Vec<u8>>,
-    notifier: Mutex<Option<Arc<dyn OutputNotifier>>>,
 }
 
 impl Pane {
     /// 建一个带 pty 的宿主单元（尚未启动子进程）。
-    pub fn open_pty(cols: usize, rows: usize, scrollback: usize, driver: Driver) -> Result<Self> {
+    ///
+    /// 模型不预留 scrollback：带 pty 的用法里模型由调用方持有（`Terminal`），本单元的模型
+    /// 不参与喂入。
+    pub fn open_pty(cols: usize, rows: usize) -> Result<Self> {
         let (cols, rows) = (cols.max(1), rows.max(1));
         let clamp = |v: usize| v.min(u16::MAX as usize) as u16;
         let (pty, reader) = Pty::open(clamp(cols), clamp(rows))?;
@@ -99,7 +70,7 @@ impl Pane {
         let inner = Arc::new(Inner {
             pty: Mutex::new(Some(pty)),
             writer: writer.clone(),
-            model: Mutex::new(Model::new(cols, rows, scrollback)),
+            model: Mutex::new(Model::new(cols, rows, 0)),
             view: Mutex::new(View::default()),
             selection: Mutex::new(Selection::default()),
             buf: Mutex::new(VecDeque::new()),
@@ -108,11 +79,8 @@ impl Pane {
             eof: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             reader_cancel: platform::reader_cancel::new_shared(),
-            repaint_pending: AtomicBool::new(false),
-            record: Mutex::new(Vec::new()),
-            notifier: Mutex::new(None),
         });
-        spawn_reader(inner.clone(), reader, writer, driver);
+        spawn_reader(inner.clone(), reader);
         Ok(Self { inner })
     }
 
@@ -131,9 +99,6 @@ impl Pane {
                 eof: AtomicBool::new(true),
                 closed: AtomicBool::new(false),
                 reader_cancel: platform::reader_cancel::new_shared(),
-                repaint_pending: AtomicBool::new(false),
-                record: Mutex::new(Vec::new()),
-                notifier: Mutex::new(None),
             }),
         }
     }
@@ -238,8 +203,7 @@ impl Pane {
 
     /// 从读缓冲取最多 `n` 字节。EOF 或关闭后返回空。
     ///
-    /// `timeout` 为 `None` 时阻塞到有数据或 EOF。仅 [`Driver::Caller`] 会往读缓冲放
-    /// 字节，因此本方法对自驱动的窗格恒返回空。
+    /// `timeout` 为 `None` 时阻塞到有数据或 EOF。等待期间不持任何其他锁。
     pub fn read(&self, n: usize, timeout: Option<Duration>) -> Vec<u8> {
         let n = n.max(1);
         let deadline = timeout.map(|t| Instant::now() + t);
@@ -292,32 +256,12 @@ impl Pane {
         }
     }
 
-    /// 取走并清空子进程原始输出（录制用）。
-    pub fn take_output(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.inner.record.lock().unwrap())
-    }
-
-    pub fn output_len(&self) -> usize {
-        self.inner.record.lock().unwrap().len()
-    }
-
-    /// 注册输出通知。
-    pub fn set_notifier(&self, notifier: Arc<dyn OutputNotifier>) {
-        *self.inner.notifier.lock().unwrap() = Some(notifier);
-    }
-
-    /// 取消输出通知。
-    pub fn clear_notifier(&self) {
-        *self.inner.notifier.lock().unwrap() = None;
-    }
-
     // ---- 模型面 ----------------------------------------------------------
 
     /// 调整尺寸：pty 与模型一起改，并按稳定行保持视口位置。
     ///
-    /// 全程持有模型锁：`master.resize` 会让 ConPTY 重画整屏，若 reader 在
-    /// `master.resize` 与 `model.resize`（rewrap）之间把重画喂进旧尺寸的模型，
-    /// rewrap 结果就会被污染。
+    /// 全程持有模型锁，使「改 pty 尺寸」与「rewrap 模型」对并发 `feed` 是一个原子操作 ——
+    /// 否则 feed 的字节会按旧列宽落进行里，随后被 rewrap 拆错。
     pub fn resize(&self, cols: usize, rows: usize) -> Result<()> {
         let (cols, rows) = (cols.max(1), rows.max(1));
         let mut model = self.inner.model.lock().unwrap();
@@ -331,7 +275,6 @@ impl Pane {
             // pty 尺寸是 u16；模型保留 usize 精度
             let clamp = |v: usize| v.min(u16::MAX as usize) as u16;
             pty.resize(clamp(cols), clamp(rows))?;
-            self.inner.repaint_pending.store(true, Ordering::SeqCst);
         }
         model.resize(cols, rows);
 
@@ -358,73 +301,9 @@ impl Pane {
         self.inner.model.lock().unwrap().clear_scrollback();
     }
 
-    /// 逐行回调「需要重写的可见行」，供帧合成使用。
-    ///
-    /// `since` 为 `None`（首帧）或 `last_view` 与当前视口偏移不同（视图平移）时整窗格
-    /// 重写，否则只回调终端标记为脏的行。回调在模型锁内执行，**不得反查本窗格**。
-    ///
-    /// 返回新的合成基线 `(seqno, 视口偏移)`。
-    pub fn for_each_dirty_row(
-        &self,
-        since: Option<usize>,
-        last_view: usize,
-        mut emit: impl FnMut(usize, &[Cell]),
-    ) -> (usize, usize) {
-        let model = self.inner.model.lock().unwrap();
-        let view = self.inner.view.lock().unwrap();
-        let screen = model.screen();
-        let total = screen.scrollback_rows();
-        let seqno = model.current_seqno();
-        let offset = view.effective(screen);
-
-        let dirty: Option<std::collections::HashSet<isize>> =
-            match since {
-                Some(since) if last_view == offset => {
-                    Some(model.changed_stable_rows(since).into_iter().collect())
-                }
-                _ => None,
-            };
-
-        for (li, phys) in view.window(screen).enumerate() {
-            let must = match &dirty {
-                None => true,
-                Some(set) => {
-                    phys >= total || set.contains(&screen.phys_to_stable_row_index(phys))
-                }
-            };
-            if !must {
-                continue;
-            }
-            let mut cells = Vec::new();
-            if phys < total {
-                // 借用式取行：`lines_in_phys_range` 会深拷贝整行
-                screen.with_phys_lines(phys..phys + 1, |lines| {
-                    if let Some(line) = lines.first() {
-                        cells = crate::term::cells_of_line(line);
-                    }
-                });
-            }
-            emit(li, &cells);
-        }
-        (seqno, offset)
-    }
-
-    /// 喂入 VT 字节流。`Driver::Auto` 的窗格由 reader 调用；`Driver::Caller` 的
-    /// 调用方（`Terminal` 用法）自己喂。
+    /// 喂入 VT 字节流。字节从哪来由调用方决定 —— 通常是 `read()` 的返回值。
     pub fn feed(&self, data: &[u8]) {
         self.inner.model.lock().unwrap().feed(data);
-    }
-
-    /// 窗格内坐标 `(列, 行)` → `(stable 行, 列)`。行会 clamp 到可见区内。
-    pub fn screen_to_stable(&self, col: usize, row: usize) -> (isize, usize) {
-        let model = self.inner.model.lock().unwrap();
-        let view = self.inner.view.lock().unwrap();
-        let screen = model.screen();
-        let window = view.window(screen);
-        let phys = (window.start + row)
-            .min(window.end.saturating_sub(1))
-            .min(screen.scrollback_rows().saturating_sub(1));
-        (screen.phys_to_stable_row_index(phys), col)
     }
 
     /// 可见屏幕纯文本（计入视口滚动）。
@@ -718,28 +597,22 @@ impl Pane {
     }
 }
 
-/// reader 线程：读 pty → 缓冲/喂模型 → 回写应答 → 通知。
-fn spawn_reader(inner: Arc<Inner>, mut reader: Box<dyn Read + Send>, writer: Writer, driver: Driver) {
+/// reader 线程：读 pty → 放进读缓冲（带背压）→ 唤醒等待方。
+fn spawn_reader(inner: Arc<Inner>, mut reader: Box<dyn Read + Send>) {
     std::thread::spawn(move || {
         if let Some(rc) = platform::reader_cancel::ReaderCancel::register_current_thread() {
             *inner.reader_cancel.lock().unwrap() = Some(rc);
         }
         let mut tmp = [0u8; CHUNK];
         loop {
-            if driver == Driver::Caller && !wait_for_space(&inner) {
+            if !wait_for_space(&inner) {
                 break;
             }
             match reader.read(&mut tmp) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let chunk = &tmp[..n];
-                    if driver == Driver::Auto {
-                        drive(&inner, chunk, &writer);
-                    } else {
-                        inner.buf.lock().unwrap().extend(chunk.iter().copied());
-                        inner.data.notify_all();
-                    }
-                    notify(&inner);
+                    inner.buf.lock().unwrap().extend(tmp[..n].iter().copied());
+                    inner.data.notify_all();
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
@@ -776,60 +649,6 @@ fn wait_for_space(inner: &Inner) -> bool {
     !inner.closed.load(Ordering::SeqCst)
 }
 
-/// 自驱动：记录原始输出、喂模型、把应答回写 pty。
-///
-/// 写回必须在**模型锁之外**：pty 写满时会一直阻塞，占着模型锁会让宿主的任何查询都卡死。
-fn drive(inner: &Inner, chunk: &[u8], writer: &Writer) {
-    if inner.repaint_pending.load(Ordering::SeqCst) {
-        if is_resize_repaint(chunk) {
-            return;
-        }
-        inner.repaint_pending.store(false, Ordering::SeqCst);
-    }
-    {
-        let mut record = inner.record.lock().unwrap();
-        if record.len() < RECORD_LIMIT {
-            record.extend_from_slice(chunk);
-        }
-    }
-    let response = {
-        let mut model = inner.model.lock().unwrap();
-        model.feed(chunk);
-        model.drain_written()
-    };
-    if response.is_empty() {
-        return;
-    }
-    if let Some(w) = writer.lock().unwrap().as_mut() {
-        let _ = w.write_all(&response);
-    }
-}
-
-/// 该块是否为 ConPTY resize 后的整屏重画。
-///
-/// 判据是「隐藏光标 + 绝对定位」**开头**。只认块首：从前按「块内任意位置出现」
-/// 判断，会让夹带该字节序列的正常输出整块被丢。
-fn is_resize_repaint(chunk: &[u8]) -> bool {
-    const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
-    let Some(rest) = chunk.strip_prefix(HIDE_CURSOR) else {
-        return false;
-    };
-    let Some(rest) = rest.strip_prefix(b"\x1b[") else {
-        return false;
-    };
-    // CSI 的终止字节落在 0x40..=0x7e；绝对定位以 'H' 结尾
-    rest.iter()
-        .find(|b| (0x40..=0x7e).contains(*b))
-        .map_or(false, |b| *b == b'H')
-}
-
-fn notify(inner: &Inner) {
-    let notifier = inner.notifier.lock().unwrap().clone();
-    if let Some(n) = notifier {
-        n.notify();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,7 +667,7 @@ mod tests {
 
     #[test]
     fn read_returns_empty_after_close() {
-        let pane = Pane::open_pty(80, 24, 100, Driver::Caller).unwrap();
+        let pane = Pane::open_pty(80, 24).unwrap();
         pane.close();
         assert!(pane.is_closed());
         assert_eq!(pane.read(16, Some(Duration::from_millis(1))), Vec::<u8>::new());
@@ -859,7 +678,7 @@ mod tests {
 
     #[test]
     fn close_wakes_blocked_read() {
-        let pane = Arc::new(Pane::open_pty(80, 24, 100, Driver::Caller).unwrap());
+        let pane = Arc::new(Pane::open_pty(80, 24).unwrap());
         let p2 = pane.clone();
         let reader = std::thread::spawn(move || p2.read(16, None));
         std::thread::sleep(Duration::from_millis(50));
@@ -870,7 +689,7 @@ mod tests {
 
     #[test]
     fn write_after_close_is_noop() {
-        let pane = Pane::open_pty(80, 24, 100, Driver::Caller).unwrap();
+        let pane = Pane::open_pty(80, 24).unwrap();
         pane.close();
         assert!(pane.write(b"x").is_ok());
     }

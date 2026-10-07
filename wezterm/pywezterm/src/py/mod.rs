@@ -11,7 +11,6 @@ mod clipboard;
 mod console_input;
 mod convert;
 mod error;
-mod mux;
 mod pty;
 mod surface;
 mod terminal;
@@ -27,7 +26,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pty::PyPty>()?;
     m.add_class::<terminal::PyTerminal>()?;
     m.add_class::<surface::PySurface>()?;
-    m.add_class::<mux::PyMux>()?;
 
     #[cfg(windows)]
     {

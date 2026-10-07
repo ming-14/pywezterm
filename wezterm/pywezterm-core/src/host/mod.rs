@@ -1,13 +1,12 @@
 //! 宿主原语：一个终端宿主单元怎么活、怎么死。
 //!
-//! [`Pane`] 是全库唯一的宿主实现 —— Python 的 `Pty` / `Terminal` 与复用器的每个窗格
-//! 都是它。这里只放「pty 生命周期、reader 线程、读缓冲、关闭协议、身份管理」，
-//! 布局与帧合成属于 [`crate::mux`]。
+//! [`Pane`] 把「跑一个终端」需要的东西装在一起：pty 生命周期、终端模型、视口、
+//! 选区、reader 线程、读缓冲、关闭协议。Python 的 `Pty` 与 `Terminal` 都建在它上面。
+//!
+//! 这里不含任何「多个终端怎么摆」的概念 —— 那属于调用方的 UI 层。
 
 pub mod pane;
 pub mod pty;
-pub mod registry;
 
-pub use pane::{Driver, OutputNotifier, Pane};
+pub use pane::Pane;
 pub use pty::Pty;
-pub use registry::{PaneId, Registry};

@@ -10,7 +10,6 @@ use pyo3::prelude::*;
 use pywezterm_core::Error;
 
 create_exception!(pywezterm, TerminalClosed, PyRuntimeError, "终端已关闭。");
-create_exception!(pywezterm, PaneNotFound, PyRuntimeError, "请求的窗格不存在。");
 create_exception!(pywezterm, RenderError, PyRuntimeError, "渲染失败。");
 create_exception!(
     pywezterm,
@@ -24,7 +23,6 @@ pub fn to_pyerr(err: Error) -> PyErr {
     let msg = err.to_string();
     match err {
         Error::Closed => TerminalClosed::new_err(msg),
-        Error::NoSuchPane(_) => PaneNotFound::new_err(msg),
         Error::Invalid(_) => PyValueError::new_err(msg),
         Error::Render(_) => RenderError::new_err(msg),
         Error::Platform(_) => PlatformUnsupported::new_err(msg),
@@ -49,7 +47,6 @@ impl<T> IntoPyResult<T> for pywezterm_core::Result<T> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("TerminalClosed", py.get_type::<TerminalClosed>())?;
-    m.add("PaneNotFound", py.get_type::<PaneNotFound>())?;
     m.add("RenderError", py.get_type::<RenderError>())?;
     m.add("PlatformUnsupported", py.get_type::<PlatformUnsupported>())?;
     Ok(())

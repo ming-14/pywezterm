@@ -6,7 +6,6 @@
 //! - [`term`] 终端领域：模型与它的派生状态
 //! - [`host`] 宿主原语：一个终端宿主单元（[`host::Pane`]）
 //! - [`render`] 渲染：网格 → 字节
-//! - [`mux`] 复用器：多个 pane 的布局、焦点与帧合成
 //!
 //! 本 crate 不依赖 pyo3：Python 绑定在 `pywezterm` crate 的 `py` 模块里。
 
@@ -14,7 +13,6 @@ pub mod env;
 pub mod error;
 pub mod host;
 pub mod input;
-pub mod mux;
 pub mod platform;
 pub mod render;
 pub mod term;

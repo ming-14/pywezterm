@@ -12,8 +12,6 @@ pub enum Error {
     Pty(anyhow::Error),
     /// 宿主单元已关闭。
     Closed,
-    /// 请求的 pane 不存在（含已关闭）。
-    NoSuchPane(u64),
     /// 参数非法（键名、鼠标按钮、渲染参数等）。
     Invalid(String),
     /// 渲染参数或编码失败。
@@ -27,7 +25,6 @@ impl fmt::Display for Error {
         match self {
             Error::Pty(e) => write!(f, "{e:#}"),
             Error::Closed => write!(f, "终端已关闭"),
-            Error::NoSuchPane(id) => write!(f, "pane {id} 不存在"),
             Error::Invalid(m) => write!(f, "{m}"),
             Error::Render(m) => write!(f, "{m}"),
             Error::Platform(m) => write!(f, "{m}"),

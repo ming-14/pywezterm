@@ -1,6 +1,6 @@
 # pywezterm
 
-把 [wezterm](https://github.com/wez/wezterm) 的核心库化为一个独立的 Python 扩展模块：**伪终端引擎**（portable-pty / ConPTY）+ **终端模拟器**（wezterm-term）+ **多 pane 复用器** + **增量渲染** + **图片/SVG 导出**。
+把 [wezterm](https://github.com/wez/wezterm) 的核心库化为一个独立的 Python 扩展模块：**伪终端引擎**（portable-pty / ConPTY）+ **终端模拟器**（wezterm-term）+ **增量渲染** + **图片/SVG 导出**。
 
 用 Rust（pyo3 / abi3）绑定，纯扩展模块、无 C 运行时依赖、无 GUI 依赖。任何 Python 程序 `import pywezterm` 即可获得一个行为与真实终端一致的 VT 状态机。
 
@@ -37,7 +37,6 @@ p.close()
   - [模块级函数](#模块级函数)
   - [Pty — 伪终端引擎](#pty--伪终端引擎)
   - [Terminal — 终端模拟器](#terminal--终端模拟器)
-  - [Mux — 多 pane 复用器](#mux--多-pane-复用器)
   - [Surface — 增量渲染表面](#surface--增量渲染表面)
   - [ConsoleInput — Windows 控制台输入](#consoleinput--windows-控制台输入)
 - [核心概念](#核心概念)
@@ -93,7 +92,6 @@ maturin build --release --out target/wheels
 |---|---|---|
 | `Pty` | 全平台 | ConPTY / Unix PTY：创建伪终端、spawn 子进程、读写、resize、句柄暴露 |
 | `Terminal` | 全平台 | VT/ANSI 状态机：喂字节流、屏幕快照、scrollback、键盘鼠标编码、选区、模式跟踪、SVG/图片渲染 |
-| `Mux` | 全平台 | 多 pane（`Pty` + `Terminal` 组合）、布局矩形、增量整屏合成、状态栏 |
 | `Surface` | 全平台 | 手工构造帧 → 只输出变化的增量 ANSI 字节 |
 | `ConsoleInput` | Windows | 归一化的控制台输入采集（按键 / 鼠标 / resize），自动保存恢复控制台模式 |
 | `clipboard_read` / `clipboard_write` | Windows | 剪贴板文本读写（供 OSC 52 落地） |
@@ -206,7 +204,7 @@ p.spawn([comspec, "/c", 'echo "a b"'],
 | `focus_changed(focused: bool)` | 上报焦点（配合 DECSET 1004） |
 | `drain_written() -> bytes` | 取走终端生成的一切输出：键盘编码回显 + **应用查询的应答** |
 
-> **`Terminal` 只编码、不写 pty** —— 它不知道有没有 pty。返回值要由调用方写下去（`Mux` 的 `key_down` / `mouse` 则会自动下发到对应 pane 的 pty，这是两者的关键差别）。
+> **`Terminal` 只编码、不写 pty** —— 它不知道有没有 pty。返回值要由调用方写下去。
 
 - `key`：`Up` `Down` `Left` `Right` `Home` `End` `Insert` `Delete` `PageUp` `PageDown` `Backspace` `Tab` `Enter` `Esc` `Space` `F1`–`F24`，或任意单字符。
 - `mods`：`KeyModifiers` 位掩码 —— `SHIFT=2`、`ALT=4`、`CTRL=8`。
@@ -249,41 +247,6 @@ p.spawn([comspec, "/c", 'echo "a b"'],
 | `render_image(scale: float, fmt: str) -> bytes` | 位图字节。`fmt` ∈ `png`/`jpg`/`jpeg`/`bmp`；`scale` 为格子像素倍数（`1.0` 标准、`2.0` 高清） |
 
 纯 Rust 光栅化（fontdb 字体发现 + fontdue 字形 + tiny-skia 合成 + image 编码），不依赖任何 GUI 库。与 `snapshot()` 同视角。
-
-### `Mux` — 多 pane 复用器
-
-`Pty` + `Terminal` 的组合体，附带布局、整屏增量合成与输入路由，适合做宿主（网页终端、录屏、CI 终端面板）。
-
-| 方法 | 说明 |
-|---|---|
-| `Mux(cols=80, rows=24)` | 创建（整屏尺寸） |
-| `add_pane(argv, cwd=None, env=None) -> pane_id` | 建 pane：openpty + spawn + 起 reader 线程自动喂终端。**当前布局最多 2 个 pane**（左右分屏） |
-| `pane_count()` / `focused()` / `dimensions()` | 查询 |
-| `pane_rects() -> list[(x,y,w,h)]` | 各 pane 布局矩形 |
-| `pane_at(x, y) -> pane_id \| None` | 命中测试（分隔线/状态栏/屏幕外返回 `None`） |
-| `resize(cols, rows)` | 宿主屏尺寸变化：重算矩形 + resize 各 pane 的 pty 与模型 |
-| `pane_resize(pane_id, cols, rows)` | 单 pane 尺寸 + 布局矩形同步 |
-| `set_sep(sep=True)` / `set_split_col(split)` / `set_status_rows(n)` / `set_status(text)` | 分隔线 / 分屏列 / 状态栏行数 / 状态栏文本 |
-| `render() -> (bytes, row, col, visible)` | **增量整屏合成**，见下 |
-| `force_repaint()` | 强制下一帧全量重绘（录制暂停恢复 / 收敛帧） |
-| `set_output_callback(cb)` | 任一 pane 有新输出并喂入后调用（无参数）。事件驱动渲染，替代轮询；传 `None` 清除 |
-| `close_pane(pane_id)` / `close()` | 关闭 pane（从布局移除 + 重算矩形）/ 关闭全部。幂等 |
-
-输入路由（`key_down` / `key_up` / `mouse` / `scroll` / `scroll_to_bottom` / `send_paste` 作用于**焦点** pane；对应 `pane_*` 版本指定 pane）：
-
-`key_down(key, mods)`、`key_up(key, mods)`、`mouse(x, y, kind="press", button="left", mods=0)`、`scroll(delta)`、`scroll_to_bottom()`、`send_paste(text)`、`set_focus(pane_id)`。均返回编码字节。整屏 `mouse(x, y, ...)` 坐标未命中任何 pane 时抛 `RuntimeError`，先用 `pane_at()` 判定。
-
-每 pane 读取：`pane_text(id)`、`pane_cursor(id) -> (row,col,visible)`、`pane_is_mouse_grabbed(id)`、`pane_try_wait(id)`、`pane_take_output(id) -> bytes`（原始输出，供录制）、`pane_output_len(id)`、`pane_write(id, data)`。选区与 OSC 52：`pane_selection_*`、`set_focus_selection_callback(cb)`（实际挂到所有 pane，焦点切换不丢回调）。
-
-**`render()` 返回值**
-
-```python
-bytes, cursor_row, cursor_col, cursor_visible = mux.render()
-```
-
-- `bytes`：增量 ANSI（含 CUP 定位，序列内坐标是 **1-based** 终端语义）；未变化帧为空 `b""`（但光标可能仍需重绘）。
-- `cursor_row` / `cursor_col`：焦点光标整屏坐标，**0-based** —— 与 `bytes` 里的 1-based 并存，注意区分。
-- 增量策略：首帧、视图滚动、resize、`force_repaint()` 后全量重写；否则按终端脏行只重写变化的行。
 
 ### `Surface` — 增量渲染表面
 
@@ -342,7 +305,7 @@ resp = t.drain_written()      # 2. 取走应答/编码
 if resp: p.write(resp)        # 3. 回写 pty —— 否则子进程等应答卡死
 ```
 
-`Mux` 已把这三步放进它自己的 reader 线程，无需手工处理；裸用 `Pty` + `Terminal` 时必须自己闭环。
+没有替你闭环的封装：裸用 `Pty` + `Terminal` 就必须自己走完这三步。
 
 ### 读缓冲与背压
 
@@ -407,7 +370,10 @@ def run(argv, cols=80, rows=24, timeout=10.0):
 print(run([os.environ.get("COMSPEC", "cmd.exe"), "/c", "ver"]))
 ```
 
-### 分屏：左右两个 shell，增量取帧
+### 一个循环里跑多个终端
+
+本库给的是「一对 `Pty` + `Terminal` = 一个终端」。跑几个、画面摆在哪，是应用的决定 ——
+`Terminal.render_ansi()`（整帧）与 `Surface`（增量帧）就是用来搭这件事的输出原语。
 
 ```python
 import os, pywezterm
@@ -417,41 +383,26 @@ def shell():
     return ["/bin/sh"] if os.name == "posix" else [os.environ.get("COMSPEC", "cmd.exe")]
 
 
-mux = pywezterm.Mux(120, 30)
-left = mux.add_pane(shell())
-right = mux.add_pane(shell())          # 第 2 个 pane 触发左右二分布局
-mux.set_sep(True)                      # 中间留一列分隔线
-mux.set_status_rows(1)
-mux.set_status("pywezterm demo")
+pairs = []
+for _ in range(2):
+    p, t = pywezterm.Pty(60, 24), pywezterm.Terminal(60, 24)
+    p.spawn(shell())
+    pairs.append((p, t))
 
-data, row, col, visible = mux.render() # 首帧全量 ANSI
-print(repr(data[:60]), row, col, visible)
-print(mux.pane_rects())                # [(x, y, w, h), ...]
-
-mux.pane_key_down(left, "v", 0)        # 键入编码后自动下发该 pane 的 pty
-mux.pane_key_down(left, "e", 0)
-mux.pane_key_down(left, "r", 0)
-mux.pane_key_down(left, "Enter", 0)
-
-data, *_ = mux.render()                # 只输出这一帧变化的字节
-```
-
-### 事件驱动渲染（替代轮询）
-
-```python
-import os, threading, pywezterm
-
-wake = threading.Event()
-mux = pywezterm.Mux(80, 24)
-mux.set_output_callback(wake.set)   # reader 线程喂完数据后唤醒
-mux.add_pane(["/bin/sh"] if os.name == "posix" else [os.environ.get("COMSPEC", "cmd.exe")])
-
-while True:
-    if wake.wait(0.1):
-        wake.clear()
-        data, *_ = mux.render()
-        if data:
-            ...            # 发给前端 / 写回宿主控制台
+try:
+    while True:
+        for p, t in pairs:
+            chunk = p.read(4096, timeout=0.05)          # 非阻塞轮询
+            if chunk:
+                t.feed(chunk)
+                resp = t.drain_written()                # 回答子进程的查询
+                if resp:
+                    p.write(resp)
+        frames = [t.render_ansi(include_cursor=True) for _, t in pairs]
+        # frames[i] 是第 i 个终端的画面，怎么摆由你的 UI 决定
+finally:
+    for p, _ in pairs:
+        p.close()
 ```
 
 ### 导出终端画面
@@ -505,15 +456,14 @@ AGENTS.md                  开发约束 + 对上游 wezterm 的改动记录
 assets/windows/conhost/    侧载用 conpty.dll + OpenConsole.exe
 tests/                     库级自测（pytest）
 wezterm/                   vendored wezterm 核心 crate（上游源码 + 本项目的绑定）
-  pywezterm-core/          ← 领域层（不依赖 pyo3）：pty、终端模型、渲染、复用器
+  pywezterm-core/          ← 领域层（不依赖 pyo3）：pty、终端模型、渲染
     src/
       error.rs          统一错误类型
       env.rs            模块自身资源位置 + 部署自省
       input.rs          输入事件词汇表（平台层产出、终端层消费）
       term/             grid（Cell/Color/Attrs）· model · view · encode · selection
       render/           ansi · surface（增量）· svg · pixmap · font
-      host/             Pane（pty + 模型 + reader + 背压 + 关闭）· registry
-      mux/              layout · compose · chrome
+      host/             Pane（pty + 模型 + reader + 背压 + 关闭）
       platform/         windows/ · posix/ —— 同名接口，各平台各自实现
   pywezterm/               ← 只有绑定壳
     Cargo.toml  build.rs
@@ -536,9 +486,9 @@ python -m pip install --force-reinstall target/wheels/*.whl
 python -m pytest tests/ -v
 ```
 
-测试直接跑已安装的 wheel —— 在仓库根执行 pytest 前请先移除源码 `pywezterm/` 目录，否则那个只有 `import *` 的空壳会遮蔽已安装的包（CI 就是这么做的）。
+CI 里测试跑已安装的 wheel，因此那边会移除源码 `pywezterm/` 目录 —— 否则那个只有 `import *` 的空壳会遮蔽已安装的包。要测**本地构建**的扩展，把刚编出来的 `pywezterm.pyd` 放进 `pywezterm/` 即可：`pytest.ini` 与 `tests/conftest.py` 会把仓库根放到 `sys.path` 最前，本地构建优先于环境里可能存在的其他副本。
 
-`tests/` 按能力划分：`test_pty`（伪终端 + 闭环）、`test_term` / `test_stage1_state`（VT 状态与模式）、`test_stage2_render` / `test_surface_render`（渲染）、`test_mux_*`（pane、布局、低层）、`test_selection`、`test_console_input`、`test_edge`、`test_refactor_invariants`（分块不变性、失败路径、幂等性）。
+`tests/` 按能力划分：`test_pty`（伪终端 + 闭环）、`test_term` / `test_stage1_state`（VT 状态与模式）、`test_stage2_render` / `test_surface_render`（渲染）、`test_selection`、`test_console_input`、`test_edge`、`test_refactor_invariants`（分块不变性、失败路径、幂等性）、`test_blackbox_comprehensive`（公开 API 表面契约）。
 
 Rust 侧单测在 `pywezterm-core` 里，不需要 Python 解释器即可运行：
 

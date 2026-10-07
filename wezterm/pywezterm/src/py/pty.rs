@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use pyo3::prelude::*;
 
-use pywezterm_core::host::{Driver, Pane};
+use pywezterm_core::host::Pane;
 
 use super::error::{IntoPyResult, Result};
 
 /// 伪终端。
 ///
 /// 只做「字节管道」：reader 线程把子进程输出放进读缓冲，[`read`](Self::read) 取走；
-/// 喂模型与回写应答由调用方决定（见 `Terminal`）。自驱动形态见 `Mux` 的窗格。
+/// 喂模型与回写应答由调用方决定（见 `Terminal`）。
 #[pyclass(name = "Pty")]
 pub struct PyPty {
     pane: Pane,
@@ -31,7 +31,7 @@ impl PyPty {
     #[pyo3(signature = (cols=80, rows=24))]
     fn new(cols: usize, rows: usize) -> Result<Self> {
         Ok(Self {
-            pane: Pane::open_pty(cols, rows, 0, Driver::Caller).py()?,
+            pane: Pane::open_pty(cols, rows).py()?,
         })
     }
 

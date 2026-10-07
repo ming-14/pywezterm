@@ -1,7 +1,7 @@
 # pywezterm API
 
-Python bindings for the wezterm terminal engine. Five classes: `Terminal` (terminal model), `Pty` (pseudo-terminal),
-`Surface` (incremental rendering surface), `Mux` (multi-pane multiplexing), `ConsoleInput` (Windows console input).
+Python bindings for the wezterm terminal engine. Four classes: `Terminal` (terminal model), `Pty` (pseudo-terminal),
+`Surface` (incremental rendering surface), `ConsoleInput` (Windows console input).
 
 ```python
 import pywezterm
@@ -13,8 +13,11 @@ pywezterm.version()          # '0.1.0'
 | `Terminal` | Pure software terminal: feed bytes → parse VT → query state / snapshot / encode input |
 | `Pty`      | Real subprocess + pseudo-terminal (ConPTY / openpty) |
 | `Surface`  | Grid → incremental ANSI byte stream |
-| `Mux`      | Multiple panes (each with Pty + Terminal) → composite single-frame incremental output |
 | `ConsoleInput` | Capture host console key/mouse/resize events (Windows only) |
+
+The library provides **primitives only**: one terminal (`Pty` + `Terminal`), one rendering outlet
+(`Surface`), one host event source (`ConsoleInput`). "How multiple terminals are laid out on screen"
+and "who receives an event" belong to the caller's UI layer and are out of scope here.
 
 ---
 
@@ -58,8 +61,7 @@ retrieve with `drain_written()`.
 
 | Exception | Raised when |
 |---|---|
-| `pywezterm.TerminalClosed` | operating on a closed terminal / pane |
-| `pywezterm.PaneNotFound` | the given pane does not exist (including closed) |
+| `pywezterm.TerminalClosed` | operating on a closed terminal |
 | `pywezterm.RenderError` | rendering or encoding failed |
 | `pywezterm.PlatformUnsupported` | the current platform does not support the capability |
 | `ValueError` | invalid argument (key name, mouse value, render size, …) |
@@ -275,95 +277,15 @@ set_cell(x, y, text, fg='default', bg='default', bold=False, italic=False,
 get_changes_bytes(since_seqno) -> (seq, bytes) · repaint_bytes() -> (seq, bytes)
 resize(cols, rows) · clear() · dimensions() · current_seqno()
 ```
-
----
-
-## 5. Mux (multi-pane host main loop)
-
-**Convention**: Layout supports 1 pane (full screen) and 2 panes (left-right split);
-`render()` needs at least one pane (with none it returns an empty frame instead of crashing).
-Pane ids increase monotonically and are **never reused** — closing one pane never invalidates
-another pane's id; `focused()` returns `None` when there is no pane at all.
-
-```python
-m = pywezterm.Mux(cols=80, rows=24)
-
-# ---- Main loop: set callback first, then create pane ----
-def on_output():                            # Called when any pane has new output (no args)
-    frame, row, col, visible = m.render()   # frame: incremental ANSI bytes
-    sys.stdout.buffer.write(frame); sys.stdout.buffer.flush()
-    # row/col are focus cursor 0-based full-screen coordinates; CUP in frame is 1-based
-
-m.set_output_callback(on_output)            # or None to clear; can be set any time
-
-a = m.add_pane(["/bin/sh"])                 # pane_id (0-based); second onwards each half
-b = m.add_pane([r"C:\Windows\System32\cmd.exe"])
-m.pane_rects()                              # [(x,y,w,h), ...]
-
-# ---- Input routing: focus version + explicit pane version ----
-m.set_focus(b)
-m.key_down("c", CTRL)                    # Send to focus pane, return encoded bytes (already sent to pty)
-m.pane_key_down(a, "Enter", 0)
-m.pane_write(a, b"ls\r\n")               # Raw bytes
-m.pane_send_paste(a, "text")
-m.mouse(x, y)                            # Full-screen coordinates → hit pane → convert to pane internal coordinates
-m.pane_at(x, y)                          # pane_id | None (separator/status bar → None)
-m.scroll(10); m.pane_scroll(a, 10); m.pane_scroll_to_bottom(a)
-
-# ---- Layout ----
-m.set_sep(True)                          # Draw separator line between two panes
-m.set_split_col(50)                      # Specify split column; None = midpoint
-m.set_status_rows(1)                     # Reserve status bar rows at bottom
-m.set_status("STATUS_BAR_X")             # Status bar text
-m.resize(120, 40); m.force_repaint()     # Force next frame full
-m.pane_resize(a, 60, 40)                 # Single pane size
-
-# ---- Queries ----
-m.pane_text(a)                           # Visible area plain text
-m.pane_cursor(a)                         # (row, col, visible), pane internal 0-based
-m.pane_try_wait(a)                       # Exit code | None
-m.pane_is_mouse_grabbed(a)
-m.pane_take_output(a)                    # Take and clear subprocess raw output (for recording)
-m.pane_output_len(a)
-
-# ---- Selection (full-screen coordinates) ----
-m.pane_selection_set(a, x0, y0, x1, y1)
-m.pane_selection_select_word(a, x, y)
-m.pane_selection_select_line(a, x, y)
-m.pane_selection_text(a); m.pane_selection_active(a); m.pane_selection_clear(a)
-m.set_focus_selection_callback(lambda sel, data: ...)   # OSC 52 (applies to currently existing panes)
-
-m.close_pane(a)                          # Close single (idempotent)
-m.close()                                # Close all subprocesses
-```
-
-```
-Mux(cols=80, rows=24)
-add_pane(argv, cwd=None, env=None) -> pane_id · close_pane(id) · close()
-pane_rects() · pane_count() · dimensions() · focused() · set_focus(id) · pane_at(x, y)
-render() -> (bytes, row, col, visible) · resize(cols, rows) · force_repaint()
-set_sep(sep=True) · set_split_col(col|None) · set_status_rows(n) · set_status(text)
-key_down(key, mods) · key_up(key, mods) · mouse(x, y, kind='press', button='left', mods=0)
-scroll(delta) · scroll_to_bottom() · send_paste(text) · set_output_callback(cb|None)
-pane_write(id, data) · pane_key_down(id, key, mods) · pane_key_up(id, key, mods)
-pane_mouse(id, x, y, ...) · pane_send_paste(id, text)
-pane_text(id) · pane_cursor(id) · pane_is_mouse_grabbed(id) · pane_try_wait(id)
-pane_resize(id, cols, rows) · pane_scroll(id, delta) · pane_scroll_to_bottom(id)
-pane_take_output(id) · pane_output_len(id)
-pane_selection_set(id, x0, y0, x1, y1) · pane_selection_select_word(id, x, y)
-pane_selection_select_line(id, x, y) · pane_selection_text(id)
-pane_selection_active(id) · pane_selection_clear(id) · set_focus_selection_callback(cb)
-```
-
----
-
-## 6. ConsoleInput (Windows)
+## 5. ConsoleInput (Windows)
 
 Construction takes over console input/output mode and code page, restored on `restore()` (or object destruction).
 Event reading is non-blocking: first `wait_input(ms)` to wait, then `read_inputs()` to get all.
 
+Events come back normalized — the caller sees pywezterm key names and screen coordinates, never a Win32 structure:
+
 ```python
-ci = pywezterm.ConsoleInput()      # mux = pywezterm.Mux(...) etc. host object
+ci = pywezterm.ConsoleInput()
 try:
     while True:
         if not ci.wait_input(100):
@@ -372,16 +294,19 @@ try:
             if ev[0] == "key":
                 _, key, mods, down = ev           # ('key', 'Up', 0, True)
                 if down:
-                    mux.key_down(key, mods)
+                    t.key_down(key, mods)         # encode, then write to the pty yourself
             elif ev[0] == "mouse":
                 _, x, y, kind, button, mods = ev  # ('mouse', 12, 4, 'press', 'left', 0)
-                mux.mouse(x, y, kind, button, mods)
+                t.mouse(x, y, kind, button, mods)
             elif ev[0] == "resize":
                 cols, rows = ci.size()            # Get size immediately after ('resize',)
-                mux.resize(cols, rows)
+                t.resize(cols, rows)
 finally:
     ci.restore()
 ```
+
+Which terminal a coordinate lands in, and who receives an event, is the caller's decision — the library
+only provides the "host event → normalized input" step.
 
 ```
 ConsoleInput()
@@ -390,7 +315,7 @@ wait_input(ms) -> bool · read_inputs() -> list[tuple] · size() -> (cols, rows)
 
 ---
 
-## 7. Module functions
+## 6. Module functions
 
 ```python
 pywezterm.version()                       # '0.1.0'
@@ -420,7 +345,7 @@ an X11/Wayland session, the latter depends on the Win32 console). On other platf
 
 ---
 
-## 8. Common recipes
+## 7. Common recipes
 
 **Terminal emulation without subprocess** (parse logs/test escape sequences)
 ```python

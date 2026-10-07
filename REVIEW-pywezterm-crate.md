@@ -4,6 +4,9 @@
 > `ARCHITECTURE.md` 落地（见该文档 §0 落地状态表）。保留本文是为了说明**每一条约束
 > 为什么存在** —— 结论引用处（如「A2」「§5.2」）在 `ARCHITECTURE.md` 与代码注释里仍在用。
 > 文中描述的文件路径与模块名是**重构前**的。
+>
+> 另：复用器（`mux`）在重构落地后又被**整体移出**本库 —— 它不是基础设施而是应用策略，
+> 理由见 `ARCHITECTURE.md` §10。因此本文中关于 `mux.rs` 的条目只作历史记录。
 
 **审查范围**：`wezterm/pywezterm/` 全部源码（`Cargo.toml`、`build.rs`、`src/**`，共 5784 行）。
 **方法**：全量静态阅读 + 针对可疑点做可执行复现（SVG 压缩已用 `rustc` 实测确认）+ 交叉核对 vendored 的 `wezterm-surface` / `wezterm-term` / `wezterm-cell` 实现与 `docs/PYWEZTERM_API.*.md` 的承诺。

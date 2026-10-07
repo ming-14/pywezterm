@@ -8,8 +8,6 @@
 use pyo3::prelude::*;
 use wezterm_term::{Alert, AlertHandler, Clipboard, ClipboardSelection, DownloadHandler};
 
-use pywezterm_core::host::OutputNotifier;
-
 /// 调用并吞掉异常。
 fn invoke(cb: &Py<PyAny>, args: impl for<'py> FnOnce(Bound<'py, PyAny>) -> PyResult<()>) {
     Python::attach(|py| {
@@ -65,14 +63,5 @@ pub struct PyAlertHandler(pub Py<PyAny>);
 impl AlertHandler for PyAlertHandler {
     fn alert(&mut self, alert: Alert) {
         invoke(&self.0, |f| f.call1((format!("{alert:?}"),)).map(|_| ()));
-    }
-}
-
-/// 「窗格有新输出」。宿主用它触发重绘。
-pub struct PyOutputNotifier(pub Py<PyAny>);
-
-impl OutputNotifier for PyOutputNotifier {
-    fn notify(&self) {
-        invoke(&self.0, |f| f.call0().map(|_| ()));
     }
 }

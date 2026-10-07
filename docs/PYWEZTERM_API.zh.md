@@ -1,7 +1,7 @@
 # pywezterm API
 
-wezterm 终端引擎的 Python 绑定。五个类：`Terminal`（终端模型）、`Pty`（伪终端）、
-`Surface`（增量渲染表面）、`Mux`（多窗格复用）、`ConsoleInput`（Windows 控制台输入）。
+wezterm 终端引擎的 Python 绑定。四个类：`Terminal`（终端模型）、`Pty`（伪终端）、
+`Surface`（增量渲染表面）、`ConsoleInput`（Windows 控制台输入）。
 
 ```python
 import pywezterm
@@ -13,8 +13,11 @@ pywezterm.version()          # '0.1.0'
 | `Terminal` | 纯软件终端：喂字节 → 解析 VT → 查询状态 / 快照 / 编码输入 |
 | `Pty`      | 真实子进程 + 伪终端（ConPTY / openpty） |
 | `Surface`  | 网格 → 增量 ANSI 字节流 |
-| `Mux`      | 多个 pane（各含 Pty + Terminal）→ 合成一帧增量输出 |
 | `ConsoleInput` | 采集宿主控制台的键鼠/resize 事件（仅 Windows） |
+
+本库只提供**原语**：一个终端（`Pty` + `Terminal`）、一个渲染出口（`Surface`）、
+一个宿主事件源（`ConsoleInput`）。「多个终端怎么摆在屏幕上」「事件发给谁」属于调用方的
+UI 层，不在本库范围内。
 
 ---
 
@@ -57,8 +60,7 @@ t.key_down("a", SHIFT | CTRL)      # -> b'\x01'
 
 | 异常 | 触发 |
 |---|---|
-| `pywezterm.TerminalClosed` | 对已关闭的终端/pane 操作 |
-| `pywezterm.PaneNotFound` | 指定的窗格不存在（含已关闭） |
+| `pywezterm.TerminalClosed` | 对已关闭的终端操作 |
 | `pywezterm.RenderError` | 渲染或编码失败 |
 | `pywezterm.PlatformUnsupported` | 当前平台不支持该能力 |
 | `ValueError` | 参数非法（键名、鼠标取值、渲染尺寸等） |
@@ -273,94 +275,15 @@ set_cell(x, y, text, fg='default', bg='default', bold=False, italic=False,
 get_changes_bytes(since_seqno) -> (seq, bytes) · repaint_bytes() -> (seq, bytes)
 resize(cols, rows) · clear() · dimensions() · current_seqno()
 ```
-
----
-
-## 5. Mux（多 pane 宿主主循环）
-
-**约定**：布局仅支持 1 个窗格（全屏）与 2 个窗格（左右二分）；`render()` 至少要有一个窗格
-（没有窗格时返回空帧，不会崩）。窗格 id 单调递增、**永不复用** —— 关闭一个窗格不会让其他窗格的
-id 失效；`focused()` 在没有任何窗格时返回 `None`。
-
-```python
-m = pywezterm.Mux(cols=80, rows=24)
-
-# ---- 主循环：先设回调，再建 pane ----
-def on_output():                            # 任一 pane 有新输出时被调用（无参）
-    frame, row, col, visible = m.render()   # frame: 增量 ANSI 字节
-    sys.stdout.buffer.write(frame); sys.stdout.buffer.flush()
-    # row/col 为焦点光标 0-based 整屏坐标；frame 内 CUP 为 1-based
-
-m.set_output_callback(on_output)            # 或 None 清除；随时可设，已建窗格立即生效
-
-a = m.add_pane(["/bin/sh"])                 # pane_id（0 起）；第二个起左右各半
-b = m.add_pane([r"C:\Windows\System32\cmd.exe"])
-m.pane_rects()                              # [(x,y,w,h), ...]
-
-# ---- 输入路由：焦点版 + 显式 pane 版 ----
-m.set_focus(b)
-m.key_down("c", CTRL)                    # 发给焦点 pane，返回编码字节（已下发 pty）
-m.pane_key_down(a, "Enter", 0)
-m.pane_write(a, b"ls\r\n")               # 原始字节
-m.pane_send_paste(a, "text")
-m.mouse(x, y)                            # 整屏坐标 → 命中 pane → 换算 pane 内坐标
-m.pane_at(x, y)                          # pane_id | None（分隔线/状态栏 → None）
-m.scroll(10); m.pane_scroll(a, 10); m.pane_scroll_to_bottom(a)
-
-# ---- 布局 ----
-m.set_sep(True)                          # 两 pane 间画分隔线
-m.set_split_col(50)                      # 指定分割列；None = 中点
-m.set_status_rows(1)                     # 底部预留状态栏行数
-m.set_status("STATUS_BAR_X")             # 状态栏文本
-m.resize(120, 40); m.force_repaint()     # 强制下帧全量
-m.pane_resize(a, 60, 40)                 # 单 pane 尺寸
-
-# ---- 查询 ----
-m.pane_text(a)                           # 可见区纯文本
-m.pane_cursor(a)                         # (row, col, visible)，pane 内 0-based
-m.pane_try_wait(a)                       # 退出码 | None
-m.pane_is_mouse_grabbed(a)
-m.pane_take_output(a)                    # 取走并清空子进程原始输出（录制用）
-m.pane_output_len(a)
-
-# ---- 选区（整屏坐标） ----
-m.pane_selection_set(a, x0, y0, x1, y1)
-m.pane_selection_select_word(a, x, y)
-m.pane_selection_select_line(a, x, y)
-m.pane_selection_text(a); m.pane_selection_active(a); m.pane_selection_clear(a)
-m.set_focus_selection_callback(lambda sel, data: ...)   # OSC 52（作用于当前已存在的 pane）
-
-m.close_pane(a)                          # 关闭单个（幂等）
-m.close()                                # 关闭全部子进程
-```
-
-```
-Mux(cols=80, rows=24)
-add_pane(argv, cwd=None, env=None) -> pane_id · close_pane(id) · close()
-pane_rects() · pane_count() · dimensions() · focused() · set_focus(id) · pane_at(x, y)
-render() -> (bytes, row, col, visible) · resize(cols, rows) · force_repaint()
-set_sep(sep=True) · set_split_col(col|None) · set_status_rows(n) · set_status(text)
-key_down(key, mods) · key_up(key, mods) · mouse(x, y, kind='press', button='left', mods=0)
-scroll(delta) · scroll_to_bottom() · send_paste(text) · set_output_callback(cb|None)
-pane_write(id, data) · pane_key_down(id, key, mods) · pane_key_up(id, key, mods)
-pane_mouse(id, x, y, ...) · pane_send_paste(id, text)
-pane_text(id) · pane_cursor(id) · pane_is_mouse_grabbed(id) · pane_try_wait(id)
-pane_resize(id, cols, rows) · pane_scroll(id, delta) · pane_scroll_to_bottom(id)
-pane_take_output(id) · pane_output_len(id)
-pane_selection_set(id, x0, y0, x1, y1) · pane_selection_select_word(id, x, y)
-pane_selection_select_line(id, x, y) · pane_selection_text(id)
-pane_selection_active(id) · pane_selection_clear(id) · set_focus_selection_callback(cb)
-```
-
----
-
-## 6. ConsoleInput（Windows）
+## 5. ConsoleInput（Windows）
 
 构造即接管控制台输入/输出模式与代码页，`restore()`（或对象销毁）时还原。
 事件读取非阻塞：先 `wait_input(ms)` 等待，再 `read_inputs()` 取全部。
 
+事件已归一化，调用方拿到的是 pywezterm 键名与整屏坐标，不需要接触任何 Win32 结构：
+
 ```python
-ci = pywezterm.ConsoleInput()      # mux = pywezterm.Mux(...) 等宿主对象
+ci = pywezterm.ConsoleInput()
 try:
     while True:
         if not ci.wait_input(100):
@@ -369,16 +292,18 @@ try:
             if ev[0] == "key":
                 _, key, mods, down = ev           # ('key', 'Up', 0, True)
                 if down:
-                    mux.key_down(key, mods)
+                    t.key_down(key, mods)         # 编码后自行写 pty
             elif ev[0] == "mouse":
                 _, x, y, kind, button, mods = ev  # ('mouse', 12, 4, 'press', 'left', 0)
-                mux.mouse(x, y, kind, button, mods)
+                t.mouse(x, y, kind, button, mods)
             elif ev[0] == "resize":
                 cols, rows = ci.size()            # ('resize',) 后立即取尺寸
-                mux.resize(cols, rows)
+                t.resize(cols, rows)
 finally:
     ci.restore()
 ```
+
+坐标落在哪个终端、事件发给谁，由调用方决定 —— 本库只提供「宿主事件 → 归一化输入」这一步。
 
 ```
 ConsoleInput()
@@ -387,7 +312,7 @@ wait_input(ms) -> bool · read_inputs() -> list[tuple] · size() -> (cols, rows)
 
 ---
 
-## 7. 模块函数
+## 6. 模块函数
 
 ```python
 pywezterm.version()                       # '0.1.0'
@@ -415,7 +340,7 @@ pywezterm.env_info()
 
 ---
 
-## 8. 常用配方
+## 7. 常用配方
 
 **无子进程的终端仿真**（解析日志/测试转义序列）
 ```python

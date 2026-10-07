@@ -8,3 +8,6 @@ pywezterm/*.so
 pywezterm/*.dylib
 pywezterm/conpty.dll
 pywezterm/OpenConsole.exe
+
+# 本地虚拟环境（maturin develop 用）
+.venv/

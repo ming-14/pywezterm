@@ -1,0 +1,38 @@
+refactor!: 复用器（mux）整体移出本库
+
+`Mux` 是这一层里唯一的**应用策略**而不是基础设施，已从库中整体删除。
+完整理由与代价记在 ARCHITECTURE.md §10，摘要：把终端模型渲染成增量 ANSI 是原语
+（`Surface` 已经独立存在），而「屏幕切两半、第 40 列画竖线、底下一行放状态栏、鼠标
+命中哪个矩形发给谁」是策略；`Mux.render()` 同时返回 0-based 光标与内部 1-based CUP
+的字节流、文档不得不写「二者并存，调用方注意区分」，本身就说明有两个人在管同一块屏幕。
+
+删掉的东西：
+- `pywezterm-core/src/mux/`（mod · layout · compose · chrome）与 `host/registry.rs`
+- `pywezterm/src/py/mux.rs`（`#[pyclass] Mux`，41 个公开方法）
+- `host/pane.rs` 里只为它存在的部件：`Driver` 枚举与自驱动分支、`OutputNotifier`、
+  录制缓冲（`take_output` / `output_len`）、`screen_to_stable`、`for_each_dirty_row`、
+  ConPTY resize 重绘跳过
+- `Error::NoSuchPane` 与 `PaneNotFound` 异常（pane 表移除后无人构造的死变体）
+- `tests/test_mux_{layout,lowlevel,pane}.py`，以及黑盒套件的 Mux 段
+
+**不受影响**：`Pane` 与 `Surface` 都没动。`Pane` 合一的价值本来就在 `Pty` 与 `Terminal`
+之间（那才是重构前真正分叉的两套实现），复用器只是第三个消费者 —— 移出 mux 不会让上一次
+重构的工作白做。
+
+顺带收窄：`Pane::open_pty(cols, rows)` 不再收 `scrollback`（带 pty 的用法里模型由调用方
+持有，本单元的模型不参与喂入），`DEFAULT_SCROLLBACK` 随之删除。
+
+BREAKING CHANGE: `pywezterm.Mux` 与 `pywezterm.PaneNotFound` 不再存在。调用方需自己
+负责布局、焦点路由、分隔线与状态栏；可用的原语是 `Terminal.render_ansi()`（整帧）与
+`Surface`（增量帧），README 的「一个循环里跑多个终端」示例给了骨架。删除前的实现保留在
+git 历史（上一次提交）里，需要时可按需取回。
+
+文档同步：API 参考删除 Mux 章节并重编号、README 中英双语、ARCHITECTURE §0/§2/§3/§4/§5/§9
+与新增 §10、REVIEW 加「mux 已移出」说明。
+
+一并纳入仓库（此前未跟踪）：`pytest.ini` + `tests/conftest.py`（让本仓库作为 pytest
+rootdir、仓库根优先于 sys.path 上的其他 pywezterm 副本）、`tests/test_blackbox_comprehensive.py`
+与 `tests/BLACKBOX_TEST_REPORT.md`（黑盒套件与报告，已按移出后重跑更新）。
+
+验证：`cargo test -p pywezterm-core` 81 通过；`pytest tests/` 95 通过 5 跳过 1 xfailed；
+两个 crate 零告警。

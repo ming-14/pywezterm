@@ -2,7 +2,7 @@
 
 [简体中文](README.zh.md)
 
-wezterm's core, librarified into a standalone Python extension module: **pseudo-terminal engine** (portable-pty / ConPTY) + **terminal emulator** (wezterm-term) + **multi-pane multiplexer** + **incremental rendering** + **image/SVG export**.
+wezterm's core, librarified into a standalone Python extension module: **pseudo-terminal engine** (portable-pty / ConPTY) + **terminal emulator** (wezterm-term) + **incremental rendering** + **image/SVG export**.
 
 Written as Rust bindings (pyo3 / abi3). A pure extension module — no C runtime dependency, no GUI dependency. Any Python program can `import pywezterm` and get a VT state machine that behaves like a real terminal.
 
@@ -39,7 +39,6 @@ p.close()
   - [Module-level functions](#module-level-functions)
   - [Pty — pseudo-terminal engine](#pty--pseudo-terminal-engine)
   - [Terminal — terminal emulator](#terminal--terminal-emulator)
-  - [Mux — multi-pane multiplexer](#mux--multi-pane-multiplexer)
   - [Surface — incremental render surface](#surface--incremental-render-surface)
   - [ConsoleInput — Windows console input](#consoleinput--windows-console-input)
 - [Core concepts](#core-concepts)
@@ -95,7 +94,6 @@ maturin build --release --out target/wheels
 |---|---|---|
 | `Pty` | all | ConPTY / Unix PTY: create a pseudo-console, spawn a child, read/write, resize, expose native handles |
 | `Terminal` | all | VT/ANSI state machine: feed bytes, screen snapshots, scrollback, key/mouse encoding, selection, mode tracking, SVG/image rendering |
-| `Mux` | all | panes (`Pty` + `Terminal` combined), layout rectangles, incremental whole-screen composition, status bar |
 | `Surface` | all | build a frame cell by cell → emit only the changed bytes as incremental ANSI |
 | `ConsoleInput` | Windows | normalized console input capture (keys / mouse / resize), saves and restores console modes |
 | `clipboard_read` / `clipboard_write` | Windows | clipboard text access (the landing point for OSC 52) |
@@ -208,7 +206,7 @@ The `Cell` tuple has 10 items:
 | `focus_changed(focused: bool)` | report focus (pairs with DECSET 1004) |
 | `drain_written() -> bytes` | take everything the terminal produced: key encodings **and answers to application queries** |
 
-> **`Terminal` only encodes; it never writes a pty** — it does not know whether a pty exists. The caller must write the returned bytes down. `Mux.key_down` / `Mux.mouse` do write to the focused pane's pty; that is the key difference between the two.
+> **`Terminal` only encodes; it never writes a pty** — it does not know whether a pty exists. The caller must write the returned bytes down.
 
 - `key`: `Up` `Down` `Left` `Right` `Home` `End` `Insert` `Delete` `PageUp` `PageDown` `Backspace` `Tab` `Enter` `Esc` `Space` `F1`–`F24`, or any single character.
 - `mods`: `KeyModifiers` bit flags — `SHIFT=2`, `ALT=4`, `CTRL=8`.
@@ -251,41 +249,6 @@ The `Cell` tuple has 10 items:
 | `render_image(scale: float, fmt: str) -> bytes` | image bytes. `fmt` ∈ `png`/`jpg`/`jpeg`/`bmp`; `scale` multiplies cell pixels (`1.0` standard, `2.0` hi-dpi) |
 
 Rasterization is pure Rust (fontdb for discovery, fontdue for glyphs, tiny-skia for compositing, image for encoding) — no GUI library involved. Same viewpoint as `snapshot()`.
-
-### `Mux` — multi-pane multiplexer
-
-`Pty` + `Terminal` combined, plus layout, whole-screen incremental composition, and input routing. Intended for hosts: web terminals, recording, CI terminal panes.
-
-| Method | Notes |
-|---|---|
-| `Mux(cols=80, rows=24)` | create (whole-screen size) |
-| `add_pane(argv, cwd=None, env=None) -> pane_id` | create a pane: openpty + spawn + reader thread that feeds the terminal automatically. **The layout currently supports at most 2 panes** (left/right split) |
-| `pane_count()` / `focused()` / `dimensions()` | queries |
-| `pane_rects() -> list[(x,y,w,h)]` | layout rectangle per pane |
-| `pane_at(x, y) -> pane_id \| None` | hit test (`None` for separator / status bar / off-screen) |
-| `resize(cols, rows)` | host screen resized: recompute rectangles and resize each pane's pty and model |
-| `pane_resize(pane_id, cols, rows)` | size one pane + sync its layout rectangle |
-| `set_sep(sep=True)` / `set_split_col(split)` / `set_status_rows(n)` / `set_status(text)` | separator column / split column / status bar height / status bar text |
-| `render() -> (bytes, row, col, visible)` | **incremental whole-screen composition**, see below |
-| `force_repaint()` | force a full redraw on the next frame (used when resuming a recording or emitting a convergence frame) |
-| `set_output_callback(cb)` | called (with no arguments) after any pane's reader thread feeds new data. Event-driven rendering instead of polling; pass `None` to clear |
-| `close_pane(pane_id)` / `close()` | close one pane (removed from the layout, rectangles recomputed) / close all. Idempotent |
-
-Input routing (`key_down` / `key_up` / `mouse` / `scroll` / `scroll_to_bottom` / `send_paste` act on the **focused** pane; the matching `pane_*` forms target a specific one):
-
-`key_down(key, mods)`, `key_up(key, mods)`, `mouse(x, y, kind="press", button="left", mods=0)`, `scroll(delta)`, `scroll_to_bottom()`, `send_paste(text)`, `set_focus(pane_id)`. All return the encoded bytes. The whole-screen `mouse(x, y, ...)` raises `RuntimeError` when the coordinates hit no pane — check with `pane_at()` first.
-
-Per-pane reads: `pane_text(id)`, `pane_cursor(id) -> (row,col,visible)`, `pane_is_mouse_grabbed(id)`, `pane_try_wait(id)`, `pane_take_output(id) -> bytes` (raw output, for recording), `pane_output_len(id)`, `pane_write(id, data)`. Selection and OSC 52: `pane_selection_*`, `set_focus_selection_callback(cb)` (actually installed on every pane so the callback survives a focus change).
-
-**What `render()` returns**
-
-```python
-bytes, cursor_row, cursor_col, cursor_visible = mux.render()
-```
-
-- `bytes`: incremental ANSI (CUP positioning included, and coordinates inside those sequences are **1-based** terminal semantics); empty `b""` for unchanged frames (the cursor may still need repainting).
-- `cursor_row` / `cursor_col`: whole-screen coordinates of the focused cursor, **0-based** — they coexist with the 1-based coordinates inside `bytes`, so keep them apart.
-- Incremental policy: first frame, view scroll, resize, and `force_repaint()` rewrite everything; otherwise only the dirty terminal rows get rewritten.
 
 ### `Surface` — incremental render surface
 
@@ -344,7 +307,7 @@ resp = t.drain_written()      # 2. take the answers/encodings
 if resp: p.write(resp)        # 3. write them back to the pty — otherwise the child waits forever
 ```
 
-`Mux` already does all three inside its reader thread. Using `Pty` + `Terminal` directly means closing the loop yourself.
+There is no helper that closes the loop for you: using `Pty` + `Terminal` means doing all three yourself.
 
 ### Read buffer and backpressure
 
@@ -409,7 +372,11 @@ def run(argv, cols=80, rows=24, timeout=10.0):
 print(run([os.environ.get("COMSPEC", "cmd.exe"), "/c", "ver"]))
 ```
 
-### Split screen: two shells side by side, incremental frames
+### Several terminals in one loop
+
+The library hands you one terminal per `Pty` + `Terminal` pair. How many you run, and where their
+pictures land on screen, is the application's call — `Terminal.render_ansi()` (full frame) and
+`Surface` (incremental frame) are the output primitives to build that on.
 
 ```python
 import os, pywezterm
@@ -419,41 +386,26 @@ def shell():
     return ["/bin/sh"] if os.name == "posix" else [os.environ.get("COMSPEC", "cmd.exe")]
 
 
-mux = pywezterm.Mux(120, 30)
-left = mux.add_pane(shell())
-right = mux.add_pane(shell())           # the 2nd pane switches to an LR split layout
-mux.set_sep(True)                       # reserve one separator column
-mux.set_status_rows(1)
-mux.set_status("pywezterm demo")
+pairs = []
+for _ in range(2):
+    p, t = pywezterm.Pty(60, 24), pywezterm.Terminal(60, 24)
+    p.spawn(shell())
+    pairs.append((p, t))
 
-data, row, col, visible = mux.render()  # first frame: full repaint
-print(repr(data[:60]), row, col, visible)
-print(mux.pane_rects())                 # [(x, y, w, h), ...]
-
-mux.pane_key_down(left, "v", 0)         # encoded and delivered to that pane's pty
-mux.pane_key_down(left, "e", 0)
-mux.pane_key_down(left, "r", 0)
-mux.pane_key_down(left, "Enter", 0)
-
-data, *_ = mux.render()                 # only the bytes that changed this frame
-```
-
-### Event-driven rendering instead of polling
-
-```python
-import os, threading, pywezterm
-
-wake = threading.Event()
-mux = pywezterm.Mux(80, 24)
-mux.set_output_callback(wake.set)   # the reader thread wakes us after feeding
-mux.add_pane(["/bin/sh"] if os.name == "posix" else [os.environ.get("COMSPEC", "cmd.exe")])
-
-while True:
-    if wake.wait(0.1):
-        wake.clear()
-        data, *_ = mux.render()
-        if data:
-            ...            # ship to the frontend / write back to the host console
+try:
+    while True:
+        for p, t in pairs:
+            chunk = p.read(4096, timeout=0.05)          # non-blocking poll
+            if chunk:
+                t.feed(chunk)
+                resp = t.drain_written()                # answer the child's queries
+                if resp:
+                    p.write(resp)
+        frames = [t.render_ansi(include_cursor=True) for _, t in pairs]
+        # frames[i] is terminal i's picture; place them however your UI wants
+finally:
+    for p, _ in pairs:
+        p.close()
 ```
 
 ### Export the terminal picture
@@ -507,15 +459,14 @@ AGENTS.md                  development constraints + log of upstream wezterm cha
 assets/windows/conhost/    sideloaded conpty.dll + OpenConsole.exe
 tests/                     library-level self-tests (pytest)
 wezterm/                   vendored wezterm core crates (upstream sources + this project's bindings)
-  pywezterm-core/          ← domain layer (no pyo3): pty, emulator model, render, multiplexer
+  pywezterm-core/          ← domain layer (no pyo3): pty, emulator model, rendering
     src/
       error.rs          unified error type
       env.rs            module's own asset location + deployment introspection
       input.rs          input event vocabulary (platform produces, terminal consumes)
       term/             grid (Cell/Color/Attrs) · model · view · encode · selection
       render/           ansi · surface (incremental) · svg · pixmap · font
-      host/             Pane (pty + model + reader + backpressure + close) · registry
-      mux/              layout · compose · chrome
+      host/             Pane (pty + model + reader + backpressure + close)
       platform/         windows/ · posix/ — same interface, per-platform implementation
   pywezterm/               ← binding shell only
     Cargo.toml  build.rs
@@ -538,9 +489,9 @@ python -m pip install --force-reinstall target/wheels/*.whl
 python -m pytest tests/ -v
 ```
 
-The tests run against the installed wheel — before running pytest from the repository root, remove the source `pywezterm/` directory, otherwise that shell containing nothing but `import *` shadows the installed package (CI does exactly that).
+In CI the tests run against the installed wheel, so the source `pywezterm/` directory is removed there — otherwise that shell containing nothing but `import *` shadows the installed package. When testing a **locally built** extension, drop the freshly built `pywezterm.pyd` into `pywezterm/` instead: `pytest.ini` + `tests/conftest.py` put the repository root first on `sys.path` so the local build wins over any other copy of the package that happens to be installed.
 
-`tests/` is split by capability: `test_pty` (pseudo-terminal + closed loop), `test_term` / `test_stage1_state` (VT state and modes), `test_stage2_render` / `test_surface_render` (rendering), `test_mux_*` (panes, layout, low-level), `test_selection`, `test_console_input`, `test_edge`, `test_refactor_invariants` (chunk invariance, failure paths, idempotence).
+`tests/` is split by capability: `test_pty` (pseudo-terminal + closed loop), `test_term` / `test_stage1_state` (VT state and modes), `test_stage2_render` / `test_surface_render` (rendering), `test_selection`, `test_console_input`, `test_edge`, `test_refactor_invariants` (chunk invariance, failure paths, idempotence), `test_blackbox_comprehensive` (public API surface contract).
 
 Rust-side unit tests live in `pywezterm-core` and run without a Python interpreter:
 

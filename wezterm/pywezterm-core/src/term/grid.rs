@@ -1,6 +1,6 @@
 //! 网格单元 —— 全 crate 的通用 IR。
 //!
-//! `render` / `host` / `mux` 都只认识这里的类型。颜色是**枚举**而不是字符串约定：
+//! `render` / `host` 都只认识这里的类型。颜色是**枚举**而不是字符串约定：
 //! 字符串形式（`default` / `pN` / `#rrggbb`）只出现在 Python 边界，见 `pywezterm` 的
 //! `py::convert`。
 

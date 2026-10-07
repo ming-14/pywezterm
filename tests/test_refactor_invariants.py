@@ -125,57 +125,6 @@ def test_invalid_mouse_args_raise_value_error():
 # ---- 失败路径与幂等性 ----------------------------------------------------
 
 
-def test_add_pane_failure_leaves_mux_usable():
-    """spawn 失败不得留下损坏状态 —— 原来的实现会先改布局与焦点，之后 render() 越界崩溃。"""
-    m = pywezterm.Mux(80, 24)
-    try:
-        with pytest.raises(Exception):
-            m.add_pane(["this-program-does-not-exist-9f3a2b"])
-        assert m.pane_count() == 0
-        assert m.pane_rects() == []
-        # 关键：失败后 render() 仍可用，而不是崩溃
-        frame, row, col, visible = m.render()
-        assert isinstance(frame, bytes)
-        # 失败后仍能正常建窗格
-        pane = m.add_pane(_shell_argv("exit"))
-        assert pane == 0
-    finally:
-        m.close()
-
-
-def test_pane_ids_are_stable_across_close():
-    """关掉 0 号不得让 1 号变成 0 号 —— 宿主缓存的 id 不能打到别的窗格上。"""
-    m = pywezterm.Mux(80, 24)
-    try:
-        a = m.add_pane(_shell_argv("exit"))
-        b = m.add_pane(_shell_argv("exit"))
-        assert (a, b) == (0, 1)
-
-        m.close_pane(a)
-        assert m.pane_count() == 1
-        assert m.pane_rects() != []
-        # b 仍然指向自己
-        assert isinstance(m.pane_text(b), str)
-        with pytest.raises(pywezterm.PaneNotFound):
-            m.pane_text(a)
-
-        # 新窗格不复用已关闭的 id
-        c = m.add_pane(_shell_argv("exit"))
-        assert c not in (a, b)
-    finally:
-        m.close()
-
-
-def test_close_pane_and_close_are_idempotent():
-    m = pywezterm.Mux(80, 24)
-    pane = m.add_pane(_shell_argv("exit"))
-    m.close_pane(pane)
-    m.close_pane(pane)
-    m.close()
-    m.close()
-    assert m.pane_count() == 0
-
-
 def test_pty_close_wakes_blocked_read():
     p = pywezterm.Pty(80, 24)
     p.spawn(_shell_argv("exit"))
