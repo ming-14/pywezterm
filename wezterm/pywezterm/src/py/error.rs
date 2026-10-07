@@ -19,7 +19,7 @@ create_exception!(
 );
 
 /// 领域错误 → Python 异常。
-pub fn to_pyerr(err: Error) -> PyErr {
+fn to_pyerr(err: Error) -> PyErr {
     let msg = err.to_string();
     match err {
         Error::Closed => TerminalClosed::new_err(msg),

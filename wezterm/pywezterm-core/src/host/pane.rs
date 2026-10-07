@@ -180,13 +180,14 @@ impl Pane {
         if self.inner.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        // 在锁外等：reader 登记句柄可能要等线程启动，持着 pty 锁睡会挡住其他 pty 操作
+        wait_for_reader_registration(&self.inner);
         {
             let mut guard = self.inner.pty.lock().unwrap();
             if let Some(pty) = guard.as_mut() {
                 pty.kill();
                 // 必须先取消 reader 的阻塞读，再释放 master —— 否则
                 // ClosePseudoConsole 会与未完成的 ReadFile 互等（ConPTY 死锁）
-                wait_for_reader_registration(&self.inner);
                 platform::reader_cancel::cancel_and_wait(
                     &self.inner.reader_cancel,
                     &self.inner.eof,

@@ -51,7 +51,7 @@ impl ReaderCancel {
     ///
     /// 单次 `CancelSynchronousIo` 可能恰好落在两次 read 之间而落空，因此这里重试；
     /// `done` 由调用方传入（通常是「reader 已置 EOF 标志」）。
-    pub fn cancel_until(&self, done: &dyn Fn() -> bool) {
+    fn cancel_until(&self, done: &dyn Fn() -> bool) {
         for _ in 0..RETRY_ATTEMPTS {
             if done() {
                 return;

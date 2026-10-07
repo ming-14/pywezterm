@@ -486,7 +486,7 @@ python -m pip install --force-reinstall target/wheels/*.whl
 python -m pytest tests/ -v
 ```
 
-CI 里测试跑已安装的 wheel，因此那边会移除源码 `pywezterm/` 目录 —— 否则那个只有 `import *` 的空壳会遮蔽已安装的包。要测**本地构建**的扩展，把刚编出来的 `pywezterm.pyd` 放进 `pywezterm/` 即可：`pytest.ini` 与 `tests/conftest.py` 会把仓库根放到 `sys.path` 最前，本地构建优先于环境里可能存在的其他副本。
+CI 里测试跑已安装的 wheel，因此那边会移除源码 `pywezterm/` 目录 —— 否则那个只有 `import *` 的空壳会遮蔽已安装的包。要测**本地构建**的扩展，把刚编出来的 `pywezterm.pyd` 放进 `pywezterm/` 即可：`pytest.ini`（`pythonpath = .`）会把仓库根放到 `sys.path` 最前，本地构建优先于环境里可能存在的其他副本。
 
 `tests/` 按能力划分：`test_pty`（伪终端 + 闭环）、`test_term` / `test_stage1_state`（VT 状态与模式）、`test_stage2_render` / `test_surface_render`（渲染）、`test_selection`、`test_console_input`、`test_edge`、`test_refactor_invariants`（分块不变性、失败路径、幂等性）、`test_blackbox_comprehensive`（公开 API 表面契约）。
 

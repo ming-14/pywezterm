@@ -1,6 +1,6 @@
 //! pywezterm —— wezterm 终端引擎的 Python 绑定。
 //!
-//! 本 crate 只做绑定：伪终端、终端模型、增量渲染、复用器的实现全在
+//! 本 crate 只做绑定：伪终端、终端模型、增量渲染的实现全在
 //! `pywezterm-core`，那个 crate 不依赖 pyo3，因此可以独立编译与测试。
 //!
 //! 分层见 `pywezterm-core` 的模块文档；绑定壳的职责边界见 [`py`]。

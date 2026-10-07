@@ -489,7 +489,7 @@ python -m pip install --force-reinstall target/wheels/*.whl
 python -m pytest tests/ -v
 ```
 
-In CI the tests run against the installed wheel, so the source `pywezterm/` directory is removed there — otherwise that shell containing nothing but `import *` shadows the installed package. When testing a **locally built** extension, drop the freshly built `pywezterm.pyd` into `pywezterm/` instead: `pytest.ini` + `tests/conftest.py` put the repository root first on `sys.path` so the local build wins over any other copy of the package that happens to be installed.
+In CI the tests run against the installed wheel, so the source `pywezterm/` directory is removed there — otherwise that shell containing nothing but `import *` shadows the installed package. When testing a **locally built** extension, drop the freshly built `pywezterm.pyd` into `pywezterm/` instead: `pytest.ini` (`pythonpath = .`) puts the repository root first on `sys.path`, so the local build wins over any other copy of the package that happens to be installed.
 
 `tests/` is split by capability: `test_pty` (pseudo-terminal + closed loop), `test_term` / `test_stage1_state` (VT state and modes), `test_stage2_render` / `test_surface_render` (rendering), `test_selection`, `test_console_input`, `test_edge`, `test_refactor_invariants` (chunk invariance, failure paths, idempotence), `test_blackbox_comprehensive` (public API surface contract).
 

@@ -14,9 +14,9 @@ cd reference/pywezterm
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-- `pytest.ini`（`pythonpath = .`，`testpaths = tests`）与 `tests/conftest.py` 确保本仓库作为
-  pytest rootdir 且仓库根排在 `sys.path` 最前，避免父项目 `agentic-tty/pyproject.toml` 的
-  `pythonpath=["src","vendor"]` 把旧的 `vendor/pywezterm` 副本抢先导入（ARCHITECTURE.md 已警告此坑）。
+- `pytest.ini`（`pythonpath = .`，`testpaths = tests`）确保本仓库作为 pytest rootdir 且仓库根排在
+  `sys.path` 最前：上层项目若在 `pythonpath` 里带了另一份 pywezterm 副本（旧构建），它会在
+  `sys.path` 上排在前面被抢先导入，于是测的是旧代码（ARCHITECTURE.md 已警告此坑）。
 - 补充套件：`tests/test_blackbox_comprehensive.py`。
 - 既有基线套件：其余 9 个 `test_*.py`。
 

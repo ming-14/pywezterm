@@ -94,7 +94,7 @@ impl Surface {
 }
 
 /// `(前景, 背景, 样式)` → 单元格属性。
-pub fn cell_attributes(fg: Color, bg: Color, attrs: Attrs) -> CellAttributes {
+fn cell_attributes(fg: Color, bg: Color, attrs: Attrs) -> CellAttributes {
     let mut out = CellAttributes::default();
     out.set_foreground(fg.to_attr());
     out.set_background(bg.to_attr());

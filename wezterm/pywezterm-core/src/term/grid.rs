@@ -30,7 +30,7 @@ const ANSI_16: [(u8, u8, u8); 16] = [
 /// 256 色调色板索引 → RGB。
 ///
 /// 0–15 是 ANSI 16 色；16–231 是 6×6×6 色立方；232–255 是 24 级灰阶。
-pub fn palette_rgb(index: u8) -> (u8, u8, u8) {
+fn palette_rgb(index: u8) -> (u8, u8, u8) {
     match index {
         0..=15 => ANSI_16[index as usize],
         16..=231 => {
